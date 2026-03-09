@@ -1,0 +1,1756 @@
+theory CSRF begin
+
+// Function signature and definition of the equational theory E
+
+builtins: multiset
+functions: NoAuth/0, NoBody/0, NoCookies/0, NoLocation/0,
+           NoOrigin/0, NoParams/0, NoRefPolicy/0, NoReferrer/0, NoSTS/0,
+           fst/1, pair/2, snd/1, uninit/0
+equations: fst(<x.1, x.2>) = x.1, snd(<x.1, x.2>) = x.2
+
+
+
+
+
+/*
+looping facts with injective instances:
+  Browser_State/3, CookiesPlain/4, CookiesSec/4, Document/8,
+  IncomingPlain/4, IncomingSec/4
+*/
+
+
+
+rule (modulo E) HTTPRevealRequestParamAuthBody:
+   [
+   !Request( $Browser, $Domain, 'http', ~nonce, method, $path,
+             parameters, plaincookies, seccookies, origin, referrer, auth, body,
+             'honest'
+   )[no_precomp]
+   ]
+  -->
+   [ Out( <parameters, auth, body> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) HTTPRevealRequestPlainCookie:
+   [
+   !Request( $Browser, $Domain, 'http', ~nonce, method, $path,
+             parameters, (plaincookies++<$name, content>), seccookies, origin,
+             referrer, auth, body, 'honest'
+   )
+   ]
+  --[
+  PDPlainLeak( $Browser, $Domain, <$name, content> ), AdvPassive( ),
+  NoLeakingUninit( content )
+  ]->
+   [ Out( content ) ]
+
+  /* has exactly the trivial AC variant */
+
+restriction NoUninit:
+  "∀ #i. (NoLeakingUninit( uninit ) @ #i) ⇒ (⊥)"
+  // safety formula
+
+lemma NoSecCookiesOverPlainHTTP:
+  all-traces
+  "∀ seccookies scheme #i.
+    (SendSecCookies( seccookies, scheme ) @ #i) ⇒
+    ((scheme = 'https') ∨
+     ((seccookies = NoCookies) ∨
+      (∃ #j. (!KU( seccookies ) @ #j) ∧ (#j < #i))))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ seccookies scheme #i.
+  (SendSecCookies( seccookies, scheme ) @ #i)
+ ∧
+  (¬(scheme = 'https')) ∧
+  (¬(seccookies = NoCookies)) ∧
+  (∀ #j. (!KU( seccookies ) @ #j) ⇒ ¬(#j < #i))"
+*/
+by sorry
+
+lemma NoRefFragmentSent:
+  all-traces
+  "∀ referer #i.
+    (SendReferer( referer ) @ #i) ⇒
+    (((referer = NoReferrer) ∨
+      (∃ scheme dom path params.
+        referer = <scheme, dom, path, params, 'bot'>)) ∨
+     (∃ #j. (!KU( referer ) @ #j) ∧ (#j < #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ referer #i.
+  (SendReferer( referer ) @ #i)
+ ∧
+  (¬(referer = NoReferrer)) ∧
+  (∀ scheme dom path params.
+    (referer = <scheme, dom, path, params, 'bot'>) ⇒ ⊥) ∧
+  (∀ #j. (!KU( referer ) @ #j) ⇒ ¬(#j < #i))"
+*/
+by sorry
+
+rule (modulo E) HTTPRevealRequestReferrer:
+   [
+   !Request( $Browser, $Domain, 'http', ~nonce, method, $path,
+             parameters, plaincookies, seccookies, origin,
+             <$RefScheme, $RefDomain, $RefPath, RefParams, RefFragment>, auth,
+             body, 'honest'
+   )
+   ]
+  --[ PDLeakReferrerParams( RefParams ), AdvPassive( ) ]->
+   [ Out( RefParams ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedServerReceiveParamAuthBody:
+   [
+   !CompromisedDomain( $Domain ),
+   !Request( $Browser, $Domain, $Scheme, ~nonce, method, $path,
+             parameters, plaincookies, seccookies, origin, referrer, auth, body,
+             'honest'
+   )[no_precomp]
+   ]
+  -->
+   [ Out( <parameters, auth, body> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedServerReceivePlainCookie:
+   [
+   !CompromisedDomain( $Domain ),
+   !Request( $Browser, $Domain, $Scheme, ~nonce, method, $path,
+             parameters, (plaincookies++<$name, content>), seccookies, origin,
+             referrer, auth, body, 'honest'
+   )
+   ]
+  --[
+  PDPlainLeak( $Browser, $Domain, <$name, content> ), AdvPassive( ),
+  NoLeakingUninit( content )
+  ]->
+   [ Out( content ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedServerReceiveSecCookie:
+   [
+   !CompromisedDomain( $Domain ),
+   !Request( $Browser, $Domain, $Scheme, ~nonce, method, $path,
+             parameters, plaincookies, (seccookies++<$name, content>), origin,
+             referrer, auth, body, 'honest'
+   )
+   ]
+  --[ PDSecLeak( $Browser, $Domain, <$name, content> ), AdvPassive( )
+  ]->
+   [ Out( content ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedServerReceiveReferrer:
+   [
+   !CompromisedDomain( $Domain ),
+   !Request( $Browser, $Domain, $Scheme, ~nonce, method, $path,
+             parameters, (leakedplain++plaincookies), (leakedsec++seccookies),
+             origin, <$RefScheme, $RefDomain, $RefPath, RefParams, RefFragment>,
+             auth, body, 'honest'
+   )
+   ]
+  --[ PDLeakReferrerParams( RefParams ), AdvPassive( ) ]->
+   [ Out( RefParams ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) HTTPRevealResponse:
+   [
+   !Response( $Domain, $Browser, 'http', ~nonce, $status,
+              setcookiesplain, setcookiessec, location, $sts, $refpolicy, body,
+              'honest'
+   )
+   ]
+  -->
+   [ Out( <setcookiesplain, setcookiessec, body> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) HTTPRevealResponseLocation:
+   [
+   !Response( $Domain, $Browser, 'http', ~nonce, $status,
+              setcookiesplain, setcookiessec,
+              <$LocScheme, $LocDomain, $LocPath, LocParams, LocFragment>, $sts,
+              $refpolicy, body, 'honest'
+   )
+   ]
+  -->
+   [ Out( <LocParams, LocFragment> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedBrowserReadReceivedMessage:
+   [
+   !CompromisedBrowser( ~bid ),
+   !Response( $Domain, ~bid, $Scheme, ~nonce, $status,
+              setcookiesplain, setcookiessec, location, $sts, $refpolicy, body,
+              'honest'
+   )[no_precomp]
+   ]
+  -->
+   [ Out( <setcookiesplain, setcookiessec, body> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedBrowserReadReceivedLocation:
+   [
+   !CompromisedBrowser( ~bid ),
+   !Response( $Domain, ~bid, $Scheme, ~nonce, $status,
+              setcookiesplain, setcookiessec,
+              <$LocScheme, $LocDomain, $LocPath, LocParams, LocFragment>, $sts,
+              $refpolicy, body, 'honest'
+   )
+   ]
+  -->
+   [ Out( <LocParams, LocFragment> ) ]
+
+  /* has exactly the trivial AC variant */
+
+lemma sourceBodyLeak [sources]:
+  all-traces
+  "∀ body #i.
+    (PDLeakBody( body ) @ #i) ⇒
+    (((body = NoBody) ∨ (∃ #j. (!KU( body ) @ #j) ∧ (#j < #i))) ∨
+     (∃ #k. (PDAddBody( body ) @ #k) ∧ (#k < #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ body #i.
+  (PDLeakBody( body ) @ #i)
+ ∧
+  (¬(body = NoBody)) ∧
+  (∀ #j. (!KU( body ) @ #j) ⇒ ¬(#j < #i)) ∧
+  (∀ #k. (PDAddBody( body ) @ #k) ⇒ ¬(#k < #i))"
+*/
+by sorry
+
+lemma sourceAuthLeak [sources]:
+  all-traces
+  "∀ auth #i.
+    (PDLeakAuth( auth ) @ #i) ⇒
+    (((auth = NoAuth) ∨ (∃ #j. (!KU( auth ) @ #j) ∧ (#j < #i))) ∨
+     (∃ #k. (PDAddAuth( auth ) @ #k) ∧ (#k < #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ auth #i.
+  (PDLeakAuth( auth ) @ #i)
+ ∧
+  (¬(auth = NoAuth)) ∧
+  (∀ #j. (!KU( auth ) @ #j) ⇒ ¬(#j < #i)) ∧
+  (∀ #k. (PDAddAuth( auth ) @ #k) ⇒ ¬(#k < #i))"
+*/
+by sorry
+
+lemma sourceParamsLeak [sources]:
+  all-traces
+  "∀ params #i.
+    (PDLeakParams( params ) @ #i) ⇒
+    (((params = NoParams) ∨ (∃ #j. (!KU( params ) @ #j) ∧ (#j < #i))) ∨
+     (∃ #k. (PDAddParams( params ) @ #k) ∧ (#k < #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ params #i.
+  (PDLeakParams( params ) @ #i)
+ ∧
+  (¬(params = NoParams)) ∧
+  (∀ #j. (!KU( params ) @ #j) ⇒ ¬(#j < #i)) ∧
+  (∀ #k. (PDAddParams( params ) @ #k) ⇒ ¬(#k < #i))"
+*/
+by sorry
+
+lemma sourceRefLeak [sources]:
+  all-traces
+  "∀ Ref #i.
+    (PDLeakRef( Ref ) @ #i) ⇒
+    (((∃ #j. (!KU( Ref ) @ #j) ∧ (#j < #i)) ∨
+      (∃ scheme dom path params fragment.
+        (Ref = <scheme, dom, path, params, fragment>) ∧
+        (((∃ #j. (PDAddParams( params ) @ #j) ∧ (#j < #i)) ∨
+          (∃ #j. (!KU( params ) @ #j) ∧ (#j < #i))) ∨
+         (params = NoParams)))) ∨
+     (Ref = NoReferrer))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ Ref #i.
+  (PDLeakRef( Ref ) @ #i)
+ ∧
+  (∀ #j. (!KU( Ref ) @ #j) ⇒ ¬(#j < #i)) ∧
+  (∀ scheme dom path params fragment.
+    (Ref = <scheme, dom, path, params, fragment>)
+   ⇒
+    (∀ #j. (PDAddParams( params ) @ #j) ⇒ ¬(#j < #i)) ∧
+    (∀ #j. (!KU( params ) @ #j) ⇒ ¬(#j < #i)) ∧
+    (¬(params = NoParams))) ∧
+  (¬(Ref = NoReferrer))"
+*/
+by sorry
+
+lemma sourcePlain [sources]:
+  all-traces
+  "(((∀ b d p #i.
+       (PDPlainLeak( b, d, p ) @ #i) ⇒
+       (((∃ #j. (!KU( p ) @ #j) ∧ (#j < #i)) ∨
+         (∃ #j. (PDAddPlainCookie( d, b, p ) @ #j) ∧ (#j < #i))) ∨
+        (∃ name. p = <name, uninit>))) ∧
+     (∀ cid browser domain name content rest #i.
+       (PlainCookiesLoop( cid, browser, domain, (rest++<name, content>)
+        ) @ #i) ⇒
+       (((∃ #j. (!KU( <name, content> ) @ #j) ∧ (#j < #i)) ∨
+         (content = uninit)) ∨
+        (∃ #j.
+          (PDAddPlainCookie( domain, browser, <name, content> ) @ #j) ∧
+          (#j < #i))))) ∧
+    (∀ cid browser domain cookie #i.
+      (PlainCookiesAddSingle( cid, browser, domain, cookie ) @ #i) ⇒
+      ((∃ setcookiessec #j.
+         ((ReceivePlainCookies( browser, domain, setcookiessec ) @ #j) ∧
+          (#j < #i)) ∧
+         (∃ rest. setcookiessec = (cookie++rest))) ∨
+       (∃ name. cookie = <name, uninit>)))) ∧
+   (∀ processid browser domain cookies #i.
+     (IncomingPlainLoop( processid, browser, domain, cookies ) @ #i) ⇒
+     ((∃ super rest #j.
+        (ReceivePlainCookies( browser, domain, super ) @ #j) ∧
+        (super = (cookies++rest))) ∨
+      (∃ #j. ReceivePlainCookies( browser, domain, cookies ) @ #j)))"
+/*
+guarded formula characterizing all counter-examples:
+"((∃ b d p #i.
+    (PDPlainLeak( b, d, p ) @ #i)
+   ∧
+    (∀ #j. (!KU( p ) @ #j) ⇒ ¬(#j < #i)) ∧
+    (∀ #j. (PDAddPlainCookie( d, b, p ) @ #j) ⇒ ¬(#j < #i)) ∧
+    (∀ name. (p = <name, uninit>) ⇒ ⊥)) ∨
+  (∃ cid browser domain name content rest #i.
+    (PlainCookiesLoop( cid, browser, domain, (rest++<name, content>)
+     ) @ #i)
+   ∧
+    (∀ #j. (!KU( <name, content> ) @ #j) ⇒ ¬(#j < #i)) ∧
+    (¬(content = uninit)) ∧
+    (∀ #j.
+      (PDAddPlainCookie( domain, browser, <name, content> ) @ #j)
+     ⇒
+      ¬(#j < #i))) ∨
+  (∃ cid browser domain cookie #i.
+    (PlainCookiesAddSingle( cid, browser, domain, cookie ) @ #i)
+   ∧
+    (∀ setcookiessec #j.
+      (ReceivePlainCookies( browser, domain, setcookiessec ) @ #j)
+     ⇒
+      ((¬(#j < #i)) ∨ (∀ rest. (setcookiessec = (cookie++rest)) ⇒ ⊥))) ∧
+    (∀ name. (cookie = <name, uninit>) ⇒ ⊥)) ∨
+  (∃ processid browser domain cookies #i.
+    (IncomingPlainLoop( processid, browser, domain, cookies ) @ #i)
+   ∧
+    (∀ super rest #j.
+      (ReceivePlainCookies( browser, domain, super ) @ #j) ∧
+      (super = (cookies++rest))
+     ⇒
+      ⊥) ∧
+    (∀ #j.
+      (ReceivePlainCookies( browser, domain, cookies ) @ #j) ⇒ ⊥)))"
+*/
+by sorry
+
+lemma sourceSec [sources]:
+  all-traces
+  "(((∀ b d p #i.
+       (PDSecLeak( b, d, p ) @ #i) ⇒
+       (((∃ #j. (!KU( p ) @ #j) ∧ (#j < #i)) ∨
+         (∃ #j. PDAddSecCookies( d, b, p ) @ #j)) ∨
+        (∃ name. p = <name, uninit>))) ∧
+     (∀ cid browser domain name content rest #i.
+       (SecCookiesLoop( cid, browser, domain, (rest++<name, content>)
+        ) @ #i) ⇒
+       (((∃ #j. (!KU( <name, content> ) @ #j) ∧ (#j < #i)) ∨
+         (content = uninit)) ∨
+        (∃ #j.
+          PDAddSecCookies( domain, browser, <name, content> ) @ #j)))) ∧
+    (∀ cid browser domain cookie #i.
+      (SecCookiesAddSingle( cid, browser, domain, cookie ) @ #i) ⇒
+      ((∃ setcookiessec #j.
+         ((ReceiveSecCookies( browser, domain, setcookiessec ) @ #j) ∧
+          (#j < #i)) ∧
+         (∃ rest. setcookiessec = (cookie++rest))) ∨
+       (∃ name. cookie = <name, uninit>)))) ∧
+   (∀ processid browser domain cookies #i.
+     (IncomingSecLoop( processid, browser, domain, cookies ) @ #i) ⇒
+     ((∃ super rest #j.
+        (ReceiveSecCookies( browser, domain, super ) @ #j) ∧
+        (super = (cookies++rest))) ∨
+      (∃ #j. ReceiveSecCookies( browser, domain, cookies ) @ #j)))"
+/*
+guarded formula characterizing all counter-examples:
+"((∃ b d p #i.
+    (PDSecLeak( b, d, p ) @ #i)
+   ∧
+    (∀ #j. (!KU( p ) @ #j) ⇒ ¬(#j < #i)) ∧
+    (∀ #j. (PDAddSecCookies( d, b, p ) @ #j) ⇒ ⊥) ∧
+    (∀ name. (p = <name, uninit>) ⇒ ⊥)) ∨
+  (∃ cid browser domain name content rest #i.
+    (SecCookiesLoop( cid, browser, domain, (rest++<name, content>)
+     ) @ #i)
+   ∧
+    (∀ #j. (!KU( <name, content> ) @ #j) ⇒ ¬(#j < #i)) ∧
+    (¬(content = uninit)) ∧
+    (∀ #j.
+      (PDAddSecCookies( domain, browser, <name, content> ) @ #j) ⇒ ⊥)) ∨
+  (∃ cid browser domain cookie #i.
+    (SecCookiesAddSingle( cid, browser, domain, cookie ) @ #i)
+   ∧
+    (∀ setcookiessec #j.
+      (ReceiveSecCookies( browser, domain, setcookiessec ) @ #j)
+     ⇒
+      ((¬(#j < #i)) ∨ (∀ rest. (setcookiessec = (cookie++rest)) ⇒ ⊥))) ∧
+    (∀ name. (cookie = <name, uninit>) ⇒ ⊥)) ∨
+  (∃ processid browser domain cookies #i.
+    (IncomingSecLoop( processid, browser, domain, cookies ) @ #i)
+   ∧
+    (∀ super rest #j.
+      (ReceiveSecCookies( browser, domain, super ) @ #j) ∧
+      (super = (cookies++rest))
+     ⇒
+      ⊥) ∧
+    (∀ #j. (ReceiveSecCookies( browser, domain, cookies ) @ #j) ⇒ ⊥)))"
+*/
+by sorry
+
+rule (modulo E) CreateBrowser:
+   [ Fr( ~bid ) ]
+  --[ OnlyOnce( <'ClaimDomain', $Browser> ), CreateBrowser( ~bid )
+  ]->
+   [
+   !Browser( ~bid, $Browser ),
+   Browser_State( ~bid, $Browser, 'Ready' )[-]
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CreateCookies:
+   [ Fr( ~cid ), !Browser( ~bid, $Browser ) ]
+  --[
+  OnlyOnce( <'CreateCookies', ~bid, $Domain> ),
+  SecCookiesCreated( ~cid )
+  ]->
+   [
+   CookiesSec( ~cid, $Browser, $Domain, NoCookies )[-],
+   CookiesPlain( ~cid, $Browser, $Domain, NoCookies )[-]
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ClaimDomain:
+   [ ]
+  --[
+  OnlyOnce( <'ClaimDomain', $Domain> ),
+  ClaimDomainAF( $Domain, $Server )
+  ]->
+   [ !ClaimDomain( $Domain, $Server ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) OpenURL:
+   [
+   Fr( ~msgnonce ), Fr( ~redirnonce ), In( parameters ),
+   !Browser( ~bid, $Browser )
+   ]
+  --[
+  OpenUrl( ),
+  Fresh_Redirnonce( $Browser, ~redirnonce, NoBody, $Domain, $Scheme,
+                    ~msgnonce
+  )
+  ]->
+   [
+   !TLW( $Tlw, $Browser ),
+   Browser_Send_HTTP( $Browser, $Tlw, 'REQ', $Scheme, $Domain, $Path,
+                      parameters, $fragment, 'GET', NoAuth, NoOrigin, NoReferrer,
+                      NoRefPolicy, NoBody, 'honest', ~redirnonce, ~msgnonce
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) RefPolChange:
+   [
+   Browser_Send_HTTP( $Browser, wid_or_did, $type, $scheme, $Domain,
+                      $Path, parameters, fragment, $method, auth, origin, referrer,
+                      referrerpolicy, body, adv, ~redirnonce, ~msgnonce
+   )
+   ]
+  -->
+   [
+   Browser_Send_HTTP_Post_Ref( $Browser, wid_or_did, $type, $scheme,
+                               $Domain, $Path, parameters, fragment, $method, auth, origin,
+                               referrer, body, adv, ~redirnonce, ~msgnonce
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) BrowserSendPlain:
+   [
+   Browser_Send_HTTP_Post_Ref( $Browser, wid_or_did, type, 'http',
+                               $Domain, $Path, parameters, fragment, $method, auth, origin,
+                               referrer, body, adv, ~redirnonce, ~msgnonce
+   )[no_precomp],
+   Browser_State( ~bid, $Browser, 'Ready' )[no_precomp],
+   CookiesPlain( ~cid, $Browser, $Domain, plaincookies )[no_precomp]
+   ]
+  --[
+  NotSTS( ~bid, $Domain ), SendTo( $Domain ),
+  PlainCookiesLoop( ~cid, $Browser, $Domain, plaincookies )
+  ]->
+   [
+   Browser_Out( $Browser, wid_or_did, $Domain, 'http', type, fragment,
+                ~msgnonce, $method, $Path, parameters, plaincookies, NoCookies,
+                origin, referrer, auth, body, adv, ~redirnonce
+   ),
+   CookiesPlain( ~cid, $Browser, $Domain, plaincookies )[-],
+   Browser_State( ~bid, $Browser, 'Ready' )[-]
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) BrowserSendSec:
+   [
+   Browser_Send_HTTP_Post_Ref( $Browser, wid_or_did, type, 'https',
+                               $Domain, $Path, parameters, fragment, $method, auth, origin,
+                               referrer, body, adv, ~redirnonce, ~msgnonce
+   )[no_precomp],
+   Browser_State( ~bid, $Browser, 'Ready' )[no_precomp],
+   CookiesPlain( ~cid, $Browser, $Domain, plainCookies )[no_precomp],
+   CookiesSec( ~cid, $Browser, $Domain, secCookies )[no_precomp]
+   ]
+  --[
+  SendTo( $Domain ),
+  SecCookiesLoop( ~cid, $Browser, $Domain, secCookies ), Sent( ),
+  SendSec( $Browser, $Domain, ~redirnonce ),
+  PlainCookiesLoop( ~cid, $Browser, $Domain, plainCookies )
+  ]->
+   [
+   Browser_Out( $Browser, wid_or_did, $Domain, 'https', type,
+                fragment, ~msgnonce, $method, $Path, parameters, plainCookies,
+                secCookies, origin, referrer, auth, body, adv, ~redirnonce
+   ),
+   CookiesPlain( ~cid, $Browser, $Domain, plainCookies )[-],
+   CookiesSec( ~cid, $Browser, $Domain, secCookies )[-],
+   Browser_State( ~bid, $Browser, 'Ready' )[-]
+   ]
+
+  /* has exactly the trivial AC variant */
+
+restriction AdhereToSTS:
+  "∀ bid domain #i.
+    (NotSTS( bid, domain ) @ #i) ⇒
+    (¬(∃ #j. STS( bid, domain, 'top' ) @ #j))"
+  // safety formula
+
+rule (modulo E) ProcessResponse:
+   [
+   Browser_State( ~bid, $Browser, 'Ready' )[-],
+   Browser_In( $Domain, $Browser, $Scheme, ~nonce, $status,
+               setcookiesplain, setcookiessec, location, STS, refpolicy, body
+   ),
+   Fr( ~plainprocessingnonce ), Fr( ~secprocessingnonce ),
+   Fr( ~docprocessingnonce )
+   ]
+  --[
+  STS( ~bid, $Domain, STS ),
+  ReceiveSecCookies( $Browser, $Domain, setcookiessec ),
+  ReceivePlainCookies( $Browser, $Domain, setcookiesplain )
+  ]->
+   [
+   Browser_State( ~bid, $Browser,
+                  <'HandlingResponse', ~plainprocessingnonce, ~secprocessingnonce, 
+                   ~docprocessingnonce>
+   ),
+   ProcessingDocument( ~docprocessingnonce, $Browser, $Scheme, ~nonce,
+                       $status, body, location, STS, refpolicy, body
+   ),
+   IncomingPlain( ~plainprocessingnonce, $Browser, setcookiesplain,
+                  $Domain
+   ),
+   IncomingSec( ~secprocessingnonce, $Browser, setcookiessec, $Domain
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AddUninitialisedCookiePlain:
+   [ CookiesPlain( ~cid, $Browser, $Domain, oldcookies ) ]
+  --[
+  OnlyOnce( <'InitPlainCookie', $name> ),
+  PlainCookiesAddSingle( ~cid, $Browser, $Domain, <$name, uninit> ),
+  Uninit( oldcookies )
+  ]->
+   [
+   CookiesPlain( ~cid, $Browser, $Domain,
+                 (oldcookies++<$name, uninit>)
+   )
+   ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AddUninitialisedCookieSec:
+   [ CookiesSec( ~cid, $Browser, $Domain, oldcookies ) ]
+  --[
+  OnlyOnce( <'InitSecCookie', $name> ),
+  SecCookiesMod( ~cid, (oldcookies++<$name, uninit>) ),
+  SecCookiesAddSingle( ~cid, $Browser, $Domain, <$name, uninit> ),
+  Uninit( oldcookies )
+  ]->
+   [
+   CookiesSec( ~cid, $Browser, $Domain, (oldcookies++<$name, uninit>)
+   )
+   ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+restriction Restr_ProcessCookiesPlainLoopReplace_1:
+  "∀ x #NOW.
+    (Restr_ProcessCookiesPlainLoopReplace_1( x ) @ #NOW) ⇒
+    (¬(x = '__HOST'))"
+  // safety formula
+
+rule (modulo E) ProcessCookiesPlainLoopReplace:
+   [
+   IncomingPlain( ~processid, $Browser, (rest++<$name, content>),
+                  $Domain
+   ),
+   CookiesPlain( ~cid, $Browser, $Domain,
+                 (oldcookies++<$name, oldcontent>)
+   )[-]
+   ]
+  --[
+  IncomingPlainLoop( ~processid, $Browser, $Domain,
+                     (rest++<$name, content>)
+  ),
+  PlainCookiesLoop( ~cid, $Browser, $Domain,
+                    (oldcookies++<$name, oldcontent>)
+  ),
+  PlainCookiesAddSingle( ~cid, $Browser, $Domain, <$name, content> ),
+  Restr_ProcessCookiesPlainLoopReplace_1( $name )
+  ]->
+   [
+   CookiesPlain( ~cid, $Browser, $Domain,
+                 (oldcookies++<$name, content>)
+   )[-],
+   IncomingPlain( ~processid, $Browser, rest, $Domain )
+   ]
+
+  // loop breakers: [1,0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ProcessCookiesPlainEnd:
+   [ IncomingPlain( ~processid, $Browser, NoCookies, $Domain ) ]
+  -->
+   [ PlainProcessed( ~processid, $Browser ) ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ProcessCookiesSecLoopReplace:
+   [
+   IncomingSec( ~processid, $Browser, (rest++<$name, content>),
+                $Domain
+   ),
+   CookiesSec( ~cid, $Browser, $Domain,
+               (oldcookies++<$name, oldcontent>)
+   )[-]
+   ]
+  --[
+  SecCookiesMod( ~cid, (oldcookies++<$name, content>) ),
+  SecCookieAdd( $Browser, $Domain, (rest++<$name, content>),
+                ~processid
+  ),
+  SecCookiesAddSingle( ~cid, $Browser, $Domain, <$name, content> ),
+  SecCookiesLoop( ~cid, $Browser, $Domain,
+                  (oldcookies++<$name, oldcontent>)
+  ),
+  AddSecLoop( ~processid ),
+  IncomingSecLoop( ~processid, $Browser, $Domain,
+                   (rest++<$name, content>)
+  )
+  ]->
+   [
+   CookiesSec( ~cid, $Browser, $Domain, (oldcookies++<$name, content>)
+   )[-],
+   IncomingSec( ~processid, $Browser, rest, $Domain )
+   ]
+
+  // loop breakers: [1,0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ProcessCookieSecEnd:
+   [ IncomingSec( ~processid, $Browser, NoCookies, $Domain ) ]
+  -->
+   [ SecProcessed( ~processid, $Browser ) ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+restriction Restr_ProcessResponseREQ_1:
+  "∀ x #NOW x.1.
+    (Restr_ProcessResponseREQ_1( x, x.1 ) @ #NOW) ⇒
+    (¬((x = '303') ∨ (x.1 = '307')))"
+  // safety formula
+
+rule (modulo E) ProcessResponseREQ:
+   [
+   ProcessingDocument( ~processid, $Browser, $Scheme, ~nonce, $status,
+                       <$script, scriptstate>, location, STS, refpolicy,
+                       <$script, scriptstate>
+   ),
+   BrowserData( $Browser, $Domain, $Scheme, method, $path, ~nonce,
+                'REQ', fragment, origin, params, referrer, $TLW, reqbody,
+                ~redirnonce
+   ),
+   !TLW( $TLW, $Browser ), Fr( ~did )
+   ]
+  --[
+  ResponseLink( ~nonce, <$script, scriptstate> ),
+  Restr_ProcessResponseREQ_1( $status, $status )
+  ]->
+   [
+   Document( ~did, $Browser, $TLW,
+             <$Scheme, $Domain, $path, params, fragment>, referrer, refpolicy,
+             $script, scriptstate
+   ),
+   ProcessedDocument( ~processid, $Browser )
+   ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+restriction Restr_ProcessResponseXHR_1:
+  "∀ x #NOW x.1.
+    (Restr_ProcessResponseXHR_1( x, x.1 ) @ #NOW) ⇒
+    (¬((x = '303') ∨ (x.1 = '307')))"
+  // safety formula
+
+rule (modulo E) ProcessResponseXHR:
+   [
+   ProcessingDocument( ~processid, $Browser, $Scheme, ~nonce, $status,
+                       body, location, STS, refpolicy, body
+   ),
+   BrowserData( $Browser, $Domain, $Scheme, method, path, ~nonce,
+                'XHR', fragment, origin, params, referrer, <~did, ~refid>, reqbody,
+                ~redirnonce
+   )
+   ]
+  --[ Restr_ProcessResponseXHR_1( $status, $status ) ]->
+   [
+   ScriptinputXHR( ~did, body, <location, STS, refpolicy>, ~refid ),
+   ProcessedDocument( ~processid, $Browser )
+   ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) FinishProcessing:
+   [
+   ProcessedDocument( ~docprocessid, $Browser ),
+   PlainProcessed( ~plainprocessid, $Browser ),
+   SecProcessed( ~secprocessid, $Browser ),
+   Browser_State( ~bid, $Browser,
+                  <'HandlingResponse', ~plainprocessid, ~secprocessid, ~docprocessid>
+   )
+   ]
+  -->
+   [ Browser_State( ~bid, $Browser, 'Ready' )[-] ]
+
+  // loop breaker: [3]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) SendRequest:
+   [
+   Browser_Out( $Browser, window_or_doc_reference, $Domain, $Scheme,
+                $type, fragment, ~nonce, $method, $path, parameters, plaincookies,
+                seccookies, origin, referrer, auth, body, adv, ~redirnonce
+   )[no_precomp]
+   ]
+  --[
+  Send_Request_Nonce( ~nonce ), SR( ),
+  SendSecCookies( seccookies, $Scheme ), SendReferer( referrer ),
+  Send_Out( $Browser, $Domain, $Scheme ),
+  SendCookiesPlain( plaincookies ), SendCookiesSec( seccookies ),
+  RequestLink( ~nonce ),
+  Send_redirnonce( $Browser, ~redirnonce, body, $Domain ),
+  SentRequest( $Browser, $Domain, $Scheme, ~redirnonce, ~nonce ),
+  Sent_Method( $Browser, $method, body ), PDLeakBody( body ),
+  PDLeakAuth( auth ), PDLeakParams( parameters ),
+  PDLeakRef( referrer )
+  ]->
+   [
+   !Request( $Browser, $Domain, $Scheme, ~nonce, $method, $path,
+             parameters, plaincookies, seccookies, origin, referrer, auth, body,
+             adv
+   ),
+   BrowserData( $Browser, $Domain, $Scheme, $method, $path, ~nonce,
+                $type, fragment, origin, parameters, referrer,
+                window_or_doc_reference, body, ~redirnonce
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) GetRequest:
+   [
+   !Request( $Browser, $Domain, $Scheme, ~nonce, $method, $path,
+             parameters, plaincookies, seccookies, origin, referrer, auth, body,
+             adv
+   )
+   ]
+  -->
+   [
+   Server_In( $Browser, $Domain, $Scheme, ~nonce, $method, $path,
+              parameters, plaincookies, seccookies, origin, referrer, auth, body,
+              adv
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) SendResponse:
+   [
+   Server_Out( $Domain, $Browser, $Scheme, ~nonce, $status,
+               setcookiesplain, setcookiessec, location, sts, refpolicy, body, adv
+   )
+   ]
+  --[
+  LinkMiddle( ~nonce, body ),
+  GetResponse( $Browser, $Domain, ~nonce, $status )
+  ]->
+   [
+   !Response( $Domain, $Browser, $Scheme, ~nonce, $status,
+              setcookiesplain, setcookiessec, location, sts, refpolicy, body, adv
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) GetResponse:
+   [
+   !Response( $Domain, $Browser, $Scheme, ~nonce, status,
+              setcookiesplain, setcookiessec, location, sts, refpolicy, body, adv
+   )
+   ]
+  -->
+   [
+   Browser_In( $Domain, $Browser, $Scheme, ~nonce, status,
+               setcookiesplain, setcookiessec, location, sts, refpolicy, body
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ServerOutUser:
+   [
+   Send_Reply( $Domain, $Browser, $Scheme, ~nonce, $status,
+               setcookiesplain, setcookiessec, location, sts, refpolicy, body
+   )
+   ]
+  -->
+   [
+   Server_Out( $Domain, $Browser, $Scheme, ~nonce, $status,
+               setcookiesplain, setcookiessec, location, sts, refpolicy, body,
+               'honest'
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ServerInUser:
+   [
+   Server_In( $Browser, $Domain, $Scheme, ~nonce, $method, $path,
+              parameters, plaincookies, seccookies, origin, referrer, auth, body,
+              adv
+   )
+   ]
+  --[ RR( ) ]->
+   [
+   Receive_Request( $Browser, $Domain, $Scheme, ~nonce, $method,
+                    $path, parameters, (plaincookies++seccookies), origin, referrer,
+                    auth, body
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) BrowserOutUser:
+   [
+   Send_Request_Browser( $Browser, wid_or_did, $type, $scheme,
+                         $Domain, $Path, parameters, fragment, $method, auth, origin,
+                         referrer, referrerpolicy, body
+   ),
+   Fr( ~redirnonce ), Fr( ~msgnonce )
+   ]
+  --[
+  Fresh_Redirnonce( $Browser, ~redirnonce, body, $Domain, $scheme,
+                    ~msgnonce
+  )
+  ]->
+   [
+   Browser_Send_HTTP( $Browser, wid_or_did, $type, $scheme, $Domain,
+                      $Path, parameters, fragment, $method, auth, origin, referrer,
+                      referrerpolicy, body, 'honest', ~redirnonce, ~msgnonce
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ServerCreateRequestUser:
+   [
+   Send_Request( $Browser, $Domain, $Scheme, ~nonce, $method, $path,
+                 parameters, plaincookies, seccookies, origin, referrer, auth, body
+   ),
+   Fr( ~redirnonce )
+   ]
+  --[
+  Fresh_Redirnonce( $Browser, ~redirnonce, body, $Domain, $Scheme,
+                    ~nonce
+  )
+  ]->
+   [
+   Browser_Out( $Browser, $RandomTLW, $Domain, $Scheme, $type,
+                $fragment, ~nonce, $method, $path, parameters, plaincookies,
+                seccookies, origin, referrer, auth, body, 'honest', ~redirnonce
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ServerReceiveReplyUser:
+   [
+   Browser_In( $Domain, $Browser, $Scheme, ~nonce, status,
+               setcookiesplain, setcookiessec, location, sts, refpolicy, body
+   )
+   ]
+  -->
+   [
+   Receive_Reply( $Domain, $Browser, $Scheme, ~nonce, status,
+                  setcookiesplain, setcookiessec, location, sts, refpolicy, body
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) HTTPModifyRequest:
+   [
+   In( <newparameters, 
+        <NewOrigin, newPlain, newSec, NewReferer, NewAuth>, newbody>
+   ),
+   !Request( $Browser, $Domain, 'http', ~nonce, $method, $path,
+             parameters, plaincookies, seccookies, origin, referrer, auth, body,
+             'honest'
+   )
+   ]
+  --[ AdvActive( ) ]->
+   [
+   Server_In( $Browser, $Domain, 'http', ~nonce, $newmethod, $newpath,
+              newparameters, newPlain, newSec, NewOrigin, NewReferer, NewAuth,
+              newbody, 'adversary'
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) HTTPModifyResponse:
+   [
+   In( <
+        <newplaincookies, newseccookies, NewLocation, NewSTS, NewRefPolicy
+        >, 
+        newbody>
+   ),
+   !Response( $Domain, $Browser, 'http', ~nonce, $status,
+              setcookiesplain, setcookiessec, location, sts, refpolicy, body,
+              'honest'
+   )
+   ]
+  --[
+  AdvActive( ), AdvRedirectingFrom( $Browser, $Domain, $newstatus ),
+  AdvRedirectingTo( $Browser, NewLocation, $newstatus ),
+  LinkAfterMiddle( ~nonce, body )
+  ]->
+   [
+   Browser_In( $Domain, $Browser, 'http', ~nonce, $newstatus,
+               newplaincookies, newseccookies, NewLocation, NewSTS, NewRefPolicy,
+               newbody
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) HTTPGenerateResponse:
+   [
+   In( <<respplaincookies, respseccookies, resplocation>, respbody> ),
+   Server_In( $Browser, $Domain, 'http', ~nonce, $method, $parth,
+              parameters, plaincookies, seccookies, origin, referer, auth,
+              newbody, 'honest'
+   )
+   ]
+  --[
+  AdvActive( ), AdvRedirectingFrom( $Browser, $Domain, $Status ),
+  AdvRedirectingTo( $Browser, resplocation, $Status )
+  ]->
+   [
+   Server_Out( $Domain, $Browser, $NewScheme, ~nonce, $Status,
+               respplaincookies, respseccookies, resplocation, $newSTS,
+               $newRefPolicy, respbody, 'adversary'
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromiseDomain:
+   [ ]
+  --[
+  CompromiseDomain( $Domain ),
+  OnlyOnce( <'CompromiseDomain', $Domain> ), AdvActive( )
+  ]->
+   [ !CompromisedDomain( $Domain ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromiseBrowser:
+   [ !Browser( ~bid, $Browser ) ]
+  --[
+  CompromiseBrowser( $Browser ),
+  OnlyOnce( <'CompromiseBrowser', $Browser> ), AdvActive( )
+  ]->
+   [ !CompromisedBrowser( $Browser ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedBrowserState:
+   [ !CompromisedBrowser( $Browser ) ]
+  --[
+  OnlyOnce( <'LeakBrowserState', $Browser, $Domain, $Scheme, $TLW> ),
+  AdvActive( )
+  ]->
+   [
+   !LeakState( $Browser, $Domain, $Scheme, $TLW ),
+   !ModifyState( $Browser, $Domain, $Scheme, $TLW )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedServerSend:
+   [
+   In( <respplaincookies, respseccookies, respbody, resplocation> ),
+   !CompromisedDomain( $Domain ),
+   Server_In( $Browser, $Domain, $Scheme, ~nonce, $method, $path,
+              parameters, plaincookies, seccookies, origin, referrer, auth, body,
+              adv
+   )
+   ]
+  --[
+  AdvActive( ), AdvRedirectingFrom( $Browser, $Domain, $Status ),
+  AdvRedirectingTo( $Browser, resplocation, $Status )
+  ]->
+   [
+   Server_Out( $Domain, $Browser, $NewScheme, ~nonce, $Status,
+               respplaincookies, respseccookies, resplocation, $newSTS,
+               $newRefPolicy, respbody, 'adversary'
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CompromisedBrowserSend:
+   [
+   !CompromisedBrowser( $Browser ),
+   In( <window_or_doc_reference, fragment, parameters, plaincookies, 
+        seccookies, <Origin, Referer, Auth>, body>
+   ),
+   Fr( ~msgnonce ), Fr( ~redirnonce )
+   ]
+  --[
+  AdvActive( ),
+  Fresh_Redirnonce( $Browser, ~redirnonce, body, $Domain, $Scheme,
+                    ~msgnonce
+  )
+  ]->
+   [
+   Browser_Out( $Browser, window_or_doc_reference, $Domain, $Scheme,
+                $type, fragment, ~msgnonce, $method, $path, parameters,
+                plaincookies, seccookies, Origin, Referer, Auth, body, 'adversary',
+                ~redirnonce
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AdversaryScript:
+   [
+   Document( ~did, $Browser, $TLW,
+             <$Scheme, $DocDomain, $path, params, fragment>, referer, refpolicy,
+             'Adversaryscript', scriptstate
+   )
+   ]
+  --[ AdvActive( ) ]->
+   [
+   !LeakState( $Browser, $DocDomain, $Scheme, $TLW ),
+   !ModifyState( $Browser, $DocDomain, $Scheme, $TLW ),
+   !AdvScript( $Browser, ~did,
+               <$Scheme, $DocDomain, $path, params, fragment>, refpolicy
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AdversaryRunScriptFormPost:
+   [
+   !AdvScript( $Browser, ~did,
+               <$DocScheme, $DocDomain, $docpath, params, docfragment>, refpolicy
+   ),
+   In( <data, parameters, fragment> ), Fr( ~redirnonce ),
+   Fr( ~msgnonce )
+   ]
+  --[
+  AdvActive( ),
+  Fresh_Redirnonce( $Browser, ~redirnonce, data, $Domain, $Scheme,
+                    ~msgnonce
+  )
+  ]->
+   [
+   Browser_Send_HTTP( $Browser, $TLW, 'REQ', $Scheme, $Domain, $Path,
+                      parameters, fragment, 'POST', NoAuth, <$DocDomain, $DocScheme>,
+                      <$DocScheme, $DocDomain, $docpath, params, 'bot'>, refpolicy, data,
+                      'honest', ~redirnonce, ~msgnonce
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) LeakPlainCookies:
+   [
+   !LeakState( $Browser, $Domain, $Scheme, $TLW ),
+   CookiesPlain( ~cid, $Browser, $Domain, (rest++<$name, content>)
+   )[-]
+   ]
+  --[
+  PDPlainLeak( $Browser, $Domain, <$name, content> ),
+  PlainCookiesLoop( ~cid, $Browser, $Domain, (rest++<$name, content>)
+  ),
+  NoLeakingUninit( content )
+  ]->
+   [
+   CookiesPlain( ~cid, $Browser, $Domain, (rest++<$name, content>)
+   )[-],
+   Out( content )
+   ]
+
+  // loop breaker: [1]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) LeakSecCookies:
+   [
+   !LeakState( $Browser, $Domain, 'https', $TLW ),
+   CookiesSec( ~cid, $Browser, $Domain, (rest++<$name, content>) )[-]
+   ]
+  --[
+  PDSecLeak( $Browser, $Domain, <$name, content> ),
+  SecCookiesLoop( ~cid, $Browser, $Domain, (rest++<$name, content>) )
+  ]->
+   [
+   CookiesSec( ~cid, $Browser, $Domain, (rest++<$name, content>) )[-],
+   Out( content )
+   ]
+
+  // loop breaker: [1]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) LeakSecrets:
+   [
+   !LeakState( $Browser, $Domain, $Scheme, $TLW ),
+   !Secrets( $Browser, $Domain, $Scheme, data )
+   ]
+  -->
+   [ Out( data ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) LeakServerSecrets:
+   [ !CompromisedDomain( $Domain ), !ServerSecret( $Domain, secret ) ]
+  -->
+   [ Out( secret ) ]
+
+  /* has exactly the trivial AC variant */
+
+restriction OnlyOnce:
+  "∀ x #i #j.
+    ((OnlyOnce( x ) @ #i) ∧ (OnlyOnce( x ) @ #j)) ⇒ (#i = #j)"
+  // safety formula
+
+restriction Equality:
+  "∀ a b #i. (Eq( a, b ) @ #i) ⇒ (a = b)"
+  // safety formula
+
+restriction Init:
+  "∀ cookie #i.
+    (Uninit( cookie ) @ #i) ⇒
+    ((cookie = NoCookies) ∨
+     (∃ a b.
+       (cookie = (a++b)) ∧
+       (∀ rest singleton.
+         (cookie = (rest++singleton)) ⇒
+         (∃ name. singleton = <name, uninit>))))"
+
+lemma aux_unique_requests [reuse]:
+  all-traces
+  "∀ nonce #i #j.
+    ((Send_Request_Nonce( nonce ) @ #i) ∧
+     (Send_Request_Nonce( nonce ) @ #j)) ⇒
+    (#i = #j)"
+/*
+guarded formula characterizing all counter-examples:
+"∃ nonce #i #j.
+  (Send_Request_Nonce( nonce ) @ #i) ∧
+  (Send_Request_Nonce( nonce ) @ #j)
+ ∧
+  ¬(#i = #j)"
+*/
+by sorry
+
+rule (modulo E) miniServerIn:
+   [
+   !ClaimDomain( $Domain, 'miniServer' ),
+   Receive_Request( $Browser, $Domain, 'https', ~nonce, 'GET',
+                    '/init', parameters, cookies, origin, NewReferer, NewAuth, newbody
+   ),
+   Fr( ~token )
+   ]
+  --[
+  PDAddSecCookies( $Domain, $Browser, <'SessionToken', ~token> ),
+  PDAddedListSec( <<'SessionToken', ~token>, 'bot'> )
+  ]->
+   [
+   Send_Reply( $Domain, $Browser, 'https', ~nonce, '200', NoCookies,
+               (NoCookies++<'SessionToken', ~token>), NoLocation, 'bot',
+               NoRefPolicy, <'MyScript', $Domain>
+   ),
+   !SessionToken( $Domain, ~token )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) miniServerDelete:
+   [
+   Receive_Request( $Browser, $Domain, 'https', ~nonce, 'POST',
+                    '/deleteme', parameters, (cookies++<'SessionToken', ~token>),
+                    origin, NewReferer, NewAuth, newbody
+   ),
+   !SessionToken( $Domain, ~token )
+   ]
+  --[ Deleted( ), Commit( $Domain, $Browser, '/deleteme' ) ]->
+   [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) clickDeleteMe:
+   [
+   Document( ~did, $Browser, $TLW,
+             <$Scheme, $DocDomain, path, params, fragment>, referer, refpolicy,
+             'MyScript', $ScriptDomain
+   )
+   ]
+  --[ Run( $Browser, $ScriptDomain, '/deleteme' ) ]->
+   [
+   Send_Request_Browser( $Browser, $TLW, 'REQ', $Scheme,
+                         $ScriptDomain, '/deleteme', 'bot', 'bot', 'POST', NoAuth,
+                         <$DocDomain, $Scheme>, NoReferrer, NoRefPolicy, NoBody
+   ),
+   Document( ~did, $Browser, $TLW,
+             <$Scheme, $DocDomain, path, params, fragment>, referer, refpolicy,
+             'MyScript', <$ScriptDomain, 'ran'>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) compromiseServer:
+   [ !CompromisedDomain( $Domain ), !SessionToken( $Domain, ~token ) ]
+  -->
+   [ Out( ~token ) ]
+
+  /* has exactly the trivial AC variant */
+
+lemma executability:
+  exists-trace
+  "∃ #i.
+    ((Deleted( ) @ #i) ∧ (¬(∃ #j. AdvActive( ) @ #j))) ∧
+    (¬(∃ b d r #j. RedirFrom( b, d, r ) @ #j))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ #i.
+  (Deleted( ) @ #i)
+ ∧
+  (∀ #j. (AdvActive( ) @ #j) ⇒ ⊥) ∧
+  (∀ b d r #j. (RedirFrom( b, d, r ) @ #j) ⇒ ⊥)"
+*/
+simplify
+solve( Receive_Request( $Browser, $Domain, 'https', ~nonce, 'POST',
+                        '/deleteme', parameters, (cookies++<'SessionToken', ~token>),
+                        origin, NewReferer, NewAuth, newbody
+       ) ▶₀ #i )
+  case ServerInUser_case_1
+  solve( Browser_Out( $Browser, window_or_doc_reference, $Domain,
+                      'https', $type, fragment, ~nonce, 'POST', '/deleteme', parameters,
+                      <'SessionToken', ~token>, cookies, origin, NewReferer, NewAuth,
+                      newbody, adv, ~redirnonce
+         )[no_precomp] ▶₀ #vr.2 )
+    case BrowserSendSec_case_1
+    by sorry
+  next
+    case BrowserSendSec_case_2
+    by contradiction /* from formulas */
+  next
+    case CompromisedBrowserSend
+    by contradiction /* from formulas */
+  qed
+next
+  case ServerInUser_case_2
+  by sorry
+next
+  case ServerInUser_case_3
+  by sorry
+next
+  case ServerInUser_case_4
+  solve( Browser_Out( $Browser, window_or_doc_reference, $Domain,
+                      'https', $type, fragment, ~nonce, 'POST', '/deleteme', parameters,
+                      plaincookies, (x++<'SessionToken', ~token>), origin, NewReferer,
+                      NewAuth, newbody, adv, ~redirnonce
+         )[no_precomp] ▶₀ #vr.2 )
+    case BrowserSendSec_case_1
+    solve( Browser_Out( $Browser, $TLW, $DocDomain, 'https', 'REQ',
+                        fragment, ~nonce.1, $method, $path, params, plaincookies.1,
+                        seccookies, origin, referer, auth, reqbody, adv, ~redirnonce.1
+           )[no_precomp] ▶₀ #vr.8 )
+      case BrowserSendSec_case_1
+      solve( ProcessingDocument( ~processid, $Browser, 'https', ~nonce.1,
+                                 $status, <'MyScript', $Domain>, location, STS, refpolicy,
+                                 <'MyScript', $Domain>
+             ) ▶₀ #vr.7 )
+        case ProcessResponse_case_01
+        by sorry
+      next
+        case ProcessResponse_case_02
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_03
+        solve( CookiesSec( ~cid, $Browser, $DocDomain,
+                           (x++<'SessionToken', ~token>)
+               )[no_precomp] ▶₃ #vr.3 )
+          case BrowserSendSec_case_1
+          by sorry
+        next
+          case BrowserSendSec_case_2
+          by sorry
+        next
+          case BrowserSendSec_case_3
+          by contradiction /* from formulas */
+        next
+          case LeakSecCookies_case_1
+          by contradiction /* from formulas */
+        next
+          case LeakSecCookies_case_2
+          by contradiction /* from formulas */
+        next
+          case LeakSecCookies_case_3
+          by contradiction /* from formulas */
+        next
+          case LeakSecCookies_case_4
+          by contradiction /* from formulas */
+        next
+          case LeakSecCookies_case_5
+          by contradiction /* from formulas */
+        next
+          case LeakSecCookies_case_6
+          by contradiction /* from formulas */
+        next
+          case ProcessCookiesSecLoopReplace_case_1
+          by sorry
+        next
+          case ProcessCookiesSecLoopReplace_case_2
+          solve( CookiesSec( ~cid, $Browser, $DocDomain,
+                             (x++<'SessionToken', oldcontent>)
+                 )[-] ▶₁ #vr.25 )
+            case AddUninitialisedCookieSec_case_1
+            by sorry
+          next
+            case AddUninitialisedCookieSec_case_2
+            solve( (x = NoCookies)  ∥
+                   (∃ a b.
+                     (x = (a++b))
+                    ∧
+                     ∀ rest singleton.
+                      (x = (rest++singleton)) ⇒ ∃ name. (singleton = <name, uninit>)) )
+              case case_1
+              solve( CookiesSec( ~cid, $Browser, $DocDomain, NoCookies
+                     ) ▶₀ #vr.26 )
+                case BrowserSendSec_case_1
+                by sorry
+              next
+                case BrowserSendSec_case_2
+                by sorry
+              next
+                case BrowserSendSec_case_3
+                by contradiction /* from formulas */
+              next
+                case CreateCookies
+                solve( IncomingSec( ~processid.1, $Browser,
+                                    (rest++<'SessionToken', ~token>), $DocDomain
+                       ) ▶₀ #vr.25 )
+                  case ProcessCookiesSecLoopReplace
+                  by sorry
+                next
+                  case ProcessResponse_case_01
+                  solve( Browser_Out( $Browser, window_or_doc_reference, $DocDomain,
+                                      'https', $type, fragment.3, ~nonce.2, 'GET', '/init',
+                                      parameters.2, plaincookies.3, seccookies.1, origin,
+                                      NewReferer, NewAuth, newbody, adv, ~redirnonce.4
+                         )[no_precomp] ▶₀ #vr.35 )
+                    case BrowserSendSec
+                    by sorry
+                  next
+                    case CompromisedBrowserSend
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case ProcessResponse_case_02
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_03
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_04
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_05
+                  solve( Browser_Out( $Browser, window_or_doc_reference, $DocDomain,
+                                      'https', $type, fragment.4, ~nonce.2, 'GET', '/init',
+                                      parameters.3, plaincookies.4, seccookies.1, origin,
+                                      NewReferer, NewAuth, newbody, adv, ~redirnonce.5
+                         )[no_precomp] ▶₀ #vr.36 )
+                    case BrowserSendSec
+                    by sorry
+                  next
+                    case CompromisedBrowserSend
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case ProcessResponse_case_06
+                  by sorry
+                next
+                  case ProcessResponse_case_07
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_08
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_09
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_10
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_11
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_12
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_13
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_14
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_15
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_16
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_17
+                  by sorry
+                next
+                  case ProcessResponse_case_18
+                  by sorry
+                next
+                  case ProcessResponse_case_19
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_20
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_21
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_22
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_23
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_24
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_25
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_26
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_27
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_28
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_29
+                  by sorry
+                next
+                  case ProcessResponse_case_30
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_31
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_32
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_33
+                  by sorry
+                next
+                  case ProcessResponse_case_34
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_35
+                  by contradiction /* from formulas */
+                next
+                  case ProcessResponse_case_36
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case case_2
+              by sorry
+            qed
+          next
+            case BrowserSendSec_case_1
+            by sorry
+          next
+            case BrowserSendSec_case_2
+            by sorry
+          next
+            case BrowserSendSec_case_3
+            by contradiction /* from formulas */
+          next
+            case LeakSecCookies_case_1
+            by contradiction /* from formulas */
+          next
+            case LeakSecCookies_case_2
+            by contradiction /* from formulas */
+          next
+            case LeakSecCookies_case_3
+            by contradiction /* from formulas */
+          next
+            case LeakSecCookies_case_4
+            by contradiction /* from formulas */
+          next
+            case LeakSecCookies_case_5
+            by contradiction /* from formulas */
+          next
+            case LeakSecCookies_case_6
+            by contradiction /* from formulas */
+          next
+            case ProcessCookiesSecLoopReplace_case_1
+            by sorry
+          next
+            case ProcessCookiesSecLoopReplace_case_2
+            by sorry
+          next
+            case ProcessCookiesSecLoopReplace_case_3
+            by sorry
+          qed
+        next
+          case ProcessCookiesSecLoopReplace_case_3
+          by sorry
+        qed
+      next
+        case ProcessResponse_case_04
+        by sorry
+      next
+        case ProcessResponse_case_05
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_06
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_07
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_08
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_09
+        by sorry
+      next
+        case ProcessResponse_case_10
+        by sorry
+      next
+        case ProcessResponse_case_11
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_12
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_13
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_14
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_15
+        by sorry
+      next
+        case ProcessResponse_case_16
+        by contradiction /* from formulas */
+      next
+        case ProcessResponse_case_17
+        by sorry
+      next
+        case ProcessResponse_case_18
+        by contradiction /* from formulas */
+      qed
+    next
+      case BrowserSendSec_case_2
+      by sorry
+    next
+      case BrowserSendSec_case_3
+      by contradiction /* from formulas */
+    next
+      case CompromisedBrowserSend
+      by contradiction /* from formulas */
+    qed
+  next
+    case BrowserSendSec_case_2
+    by contradiction /* from formulas */
+  next
+    case CompromisedBrowserSend
+    by contradiction /* from formulas */
+  qed
+qed
+
+lemma agreementCSRF:
+  all-traces
+  "∀ server browser path #i.
+    (((Commit( server, browser, path ) @ #i) ∧
+      (¬(∃ #r. CompromiseDomain( server ) @ #r))) ∧
+     (¬(∃ #r. CompromiseBrowser( browser ) @ #r))) ⇒
+    (∃ #j. (Run( browser, server, path ) @ #j) ∧ (#j < #i))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ server browser path #i.
+  (Commit( server, browser, path ) @ #i)
+ ∧
+  (∀ #r. (CompromiseDomain( server ) @ #r) ⇒ ⊥) ∧
+  (∀ #r. (CompromiseBrowser( browser ) @ #r) ⇒ ⊥) ∧
+  (∀ #j. (Run( browser, server, path ) @ #j) ⇒ ¬(#j < #i))"
+*/
+by sorry
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+WARNING: the following wellformedness checks failed!
+
+Facts occur in the left-hand-side but not in any right-hand-side 
+=================================================================
+
+  1. in rule "ServerCreateRequestUser":  factName `Send_Request' arity: 13 multiplicity: Linear
+  
+  2. in rule "LeakSecrets":  factName `Secrets' arity: 4 multiplicity: Persistent
+  
+  3. in rule "LeakServerSecrets":  factName `ServerSecret' arity: 2 multiplicity: Persistent
+
+Inexistant lemma actions
+========================
+
+  lemma `sourceBodyLeak' references action 
+    fact "PDAddBody" (arity 1, Linear) 
+  but no rule has such an action.
+  
+  lemma `sourceAuthLeak' references action 
+    fact "PDAddAuth" (arity 1, Linear) 
+  but no rule has such an action.
+  
+  lemma `sourceParamsLeak' references action 
+    fact "PDAddParams" (arity 1, Linear) 
+  but no rule has such an action.
+  
+  lemma `sourceRefLeak' references action 
+    fact "PDAddParams" (arity 1, Linear) 
+  but no rule has such an action.
+  
+  lemma `sourcePlain' references action 
+    fact "PDAddPlainCookie" (arity 3, Linear) 
+  but no rule has such an action.
+  
+  lemma `sourcePlain' references action 
+    fact "PDAddPlainCookie" (arity 3, Linear) 
+  but no rule has such an action.
+  
+  lemma `executability' references action 
+    fact "RedirFrom" (arity 3, Linear) 
+  but no rule has such an action.
+
+Restriction actions
+===================
+
+  restriction `Equality' references action 
+    fact "Eq" (arity 2, Linear) 
+  but no rule has such an action.
+*/
+
+/*
+Generated from:
+Tamarin version 1.10.0
+Maude version 3.2 (unsupported)
+Git revision: cb62c305f8c8b8c1e664152aa33c95b7b8d5ef32, branch: master
+Compiled at: 2024-10-30 11:11:02.432289291 UTC
+*/
+
+end

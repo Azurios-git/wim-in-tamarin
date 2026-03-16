@@ -1,0 +1,57 @@
+
+//lemma sourceAuthLeak:
+lemma sourceAuthLeak[sources]:
+"All auth #i. PDLeakAuth(auth)@i ==> auth = NoAuth() 
+| (Ex #j. !KU(auth) @ j & j < i) 
+| (Ex #k. PDAddAuth(auth)@k & k < i)
+"
+
+lemma sourceParamsLeak[sources, reuse]:
+// lemma sourceParamsLeak:
+"All params #i. PDLeakParams(params)@i ==> 
+params = NoParams() 
+| (Ex #j. !KU(params) @ j & j < i) 
+| (Ex #k. PDAddParams(params)@k & k < i)
+"
+
+lemma sourceRefLeak[sources]:
+// lemma sourceRefLeak:
+"All Ref #i. PDLeakRef(Ref)@i ==>
+(Ex #j. !KU(Ref)@j & j < i)
+| (Ex scheme dom path params fragment. Ref = <scheme, dom, path, params, fragment> & ((Ex #j. PDAddParams(params)@j & j < i) | (Ex #j. !KU(params)@j & j < i) | params = NoParams()) )
+| Ref = NoReferrer()
+"
+
+//lemma sourcePlain:
+lemma sourcePlain[sources]:
+"(All b d p #i. PDPlainLeak(b, d, p)@i ==> ((Ex #j. !KU(p)@j & j < i) | (Ex #j. PDAddPlainCookie(d,b,p)@j & j < i) | (Ex name. p = <name,uninit()>)))
+& (All cid browser domain name content rest #i. PlainCookiesLoop(cid, browser, domain, <name, content> ++ rest)@i ==> (Ex #j. !KU(<name,content>)@j & j < i) | content = uninit() | (Ex #j. PDAddPlainCookie(domain,browser,<name, content>)@j & j < i))
+& (All cid browser domain cookie #i. PlainCookiesAddSingle(cid, browser, domain, cookie)@i ==> 
+(Ex setcookiessec #j. ReceivePlainCookies(browser, domain, setcookiessec)@j & j < i & ((Ex rest. setcookiessec = cookie ++ rest)))
+| Ex name. cookie = <name, uninit()>)
+& (All processid browser domain cookies #i. IncomingPlainLoop(processid, browser, domain, cookies)@i ==> 
+(Ex super rest #j. ReceivePlainCookies(browser, domain, super)@j & super = rest ++ cookies)
+| Ex #j. ReceivePlainCookies(browser, domain, cookies)@j)"
+
+// lemma sourceSec:
+lemma sourceSec[sources]:
+"(All b d p #i. PDSecLeak(b, d, p)@i ==> ((Ex #j. !KU(p)@j & j < i) | (Ex #j. PDAddSecCookies(d, b, p)@j) | (Ex name. p = <name,uninit()>)))
+& (All cid browser domain name content rest #i. SecCookiesLoop(cid, browser, domain, <name, content> ++ rest)@i ==> (Ex #j. !KU(<name,content>)@j & j < i) | content = uninit() | (Ex #j. PDAddSecCookies(domain, browser, <name, content>)@j))
+& (All cid browser domain cookie #i. SecCookiesAddSingle(cid, browser, domain, cookie)@i ==> 
+(Ex setcookiessec #j. ReceiveSecCookies(browser, domain, setcookiessec)@j & j < i & ((Ex rest. setcookiessec = cookie ++ rest)))
+| Ex name. cookie = <name, uninit()>)
+& (All processid browser domain cookies #i. IncomingSecLoop(processid, browser, domain, cookies)@i ==> 
+(Ex super rest #j. ReceiveSecCookies(browser, domain, super)@j & super = rest ++ cookies)
+| Ex #j. ReceiveSecCookies(browser, domain, cookies)@j)
+"
+
+//lemma sourceBodyLeak:
+lemma sourceBodyLeak[sources]:
+"
+All body #i. PDLoopBody(body)@i & not ((Ex #l. !KU(body) @ l & l < i) | (Ex #k. PDAddBody(body)@k & k < i))
+==> 
+(body = NoBody() 
+| (Ex #j. !KU(body) @ j & j < i)
+| (Ex #k. PDAddBody(body)@k & k < i)
+)
+"

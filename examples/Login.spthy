@@ -1,0 +1,110 @@
+theory LoginExample begin
+
+#include "../wim.spthy"
+
+rule preShareLoginDetails:
+    [ !ClaimDomain($Domain, 'loginSite')
+    , !Browser(~bid, $Browser)
+    , Fr(~login) ]
+    --[Credentials($Browser, $Domain, ~login), CarefulUser($Scheme), OnlyOnce(<'PreShareLogin',$Browser, $Domain>)]->
+    [ !LoginDetails($Domain, $Browser, ~login)
+    , !Secrets($Browser, $Domain, $Scheme, ~login)
+    , !ServerSecret($Domain, ~login)
+    ]
+
+rule SiteLoginPage:
+    let body = <'LoginToSite', $Domain> in
+    [ !ClaimDomain($Domain, 'loginSite')
+    , Receive_Request($Browser, $Domain,'https', ~nonce, 'GET', '/login', parameters, cookies, origin, NewReferer, NewAuth, newbody)]
+    --[]->
+    [Send_Reply($Domain, $Browser,'https', ~nonce, '200', NoCookies(), NoCookies(), NoLocation(), NoSTS(), NoRefPolicy(), body)]
+
+rule SiteLoginForm:
+    let body = <'SuccessfulLogin', 'bot'> in
+    [ !LoginDetails($Domain, $LoginBrowser, ~login)
+    , Receive_Request($Browser, $Domain,'https', ~nonce, 'POST', '/loginform', parameters, cookies, origin, NewReferer, NewAuth, <'Credentials', ~login>)
+    , Fr(~token)]
+    --[PDAddSecCookies($Domain, $Browser, <'SessionToken', ~token>), PDAddedListSec(<<'SessionToken',~token>, NoCookies()>)
+      , Login(~token)
+      , SecretSession(~token, $Browser, $Domain)
+      , Commit($Domain, $LoginBrowser) ]->
+    [ Send_Reply($Domain, $Browser,'https', ~nonce, '200', NoCookies(), <'SessionToken',~token> ++ NoCookies(), NoLocation(), NoSTS(), NoRefPolicy(), body)
+    , !ServerSecret($Domain, <$LoginBrowser, ~token>) ]
+
+rule LoginScript:
+let docURL = <$Scheme, $DocDomain, path, params, fragment>
+    docOrigin = <$DocDomain, $Scheme>
+    body = <'Credentials',~login> in
+   [ Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'LoginToSite', $ScriptDomain)
+   , !Secrets($Browser, $DocDomain, $Scheme, ~login) ]
+   --[PDAddBody(body), LoginS(), Running($Browser, $DocDomain)]->
+    // -->
+   [ Send_Request_Browser($Browser, $TLW, 'REQ', $Scheme, $DocDomain, '/loginform', NoParams(), 'bot', 'POST', NoAuth(), docOrigin, NoReferrer(), NoRefPolicy(), body)
+   ,  Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'LoginToSite', <$ScriptDomain,'Scriptover'>) ]
+
+rule FinishLoginUser:
+[Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'SuccessfulLogin', 'bot')]
+--[Finish()]->
+[Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'SuccessfulLogin', 'done')]
+
+// user only enters secrets on https site
+restriction CarefulUser:
+"All scheme #i. CarefulUser(scheme)@i ==> scheme = 'https'"
+
+lemma LoginPossible:
+exists-trace
+"Ex #i token. Login(token)@i
+& not (Ex #i. AdvActive()@i)
+& (All #i #j bid otherbid. CreateBrowser(bid)@i & CreateBrowser(otherbid)@j ==> #i = #j) // only one browser
+& (All #i domain. SendTo(domain)@i ==> Ex #i. (ClaimDomainAF(domain, 'loginSite')@i)) // only to our example domain
+"
+
+lemma aux_no_honest_redirs[reuse]:
+"All browser dom redirn #i. RedirFrom(browser, dom, 'https', redirn)@i ==> Ex #j. CompromiseDomain(dom)@j"
+
+lemma aux_get_empty_body[reuse]:
+"All browser method body #i. Sent_Method(browser, method, body)@i & (method = 'GET' | method = 'HEAD') ==> body = NoBody() | Ex #j. CompromiseBrowser(browser)@j"
+
+
+// each redirnonce is only created once
+lemma aux_redirnonce_unique[reuse]:
+"All browser nonce body otherbody dom otherdom scheme otherscheme msgnonce othermsgnonce #i #j. Fresh_Redirnonce(browser, nonce, otherbody, otherdom, scheme, msgnonce)@j & Fresh_Redirnonce(browser, nonce, body, dom, otherscheme, othermsgnonce)@i ==> #i = #j"
+
+
+// both send and redirs have an originating fresh redirnonce with the same body, or are NoBody()
+lemma aux_redirect_chain[reuse, use_induction]:
+"All browser nonce body dom #i. Send_redirnonce(browser, nonce, body, dom)@i 
+    ==> Ex otherbody otherdom scheme msgnonce #j. Fresh_Redirnonce(browser, nonce, otherbody, otherdom, scheme, msgnonce)@j & (body = NoBody() | otherbody = body)"
+
+lemma aux_redirect_chain2[reuse, use_induction]:
+"All browser nonce body dom inmsg status outmsg #i. Continue_Redir(browser, dom, inmsg, nonce, status, outmsg, body)@i 
+    ==> Ex otherbody otherdom scheme msgnonce #j. Fresh_Redirnonce(browser, nonce, otherbody, otherdom, scheme, msgnonce)@j & (body = NoBody() | otherbody = body)"
+
+// if a redir chain starts with https and that launches a chain, there has been a (redirection status) response to the first message
+lemma aux_honest_replies[reuse, use_induction]:
+"All browser redirnonce body dom otherbody otherdom msgnonce scheme #i #j. 
+Fresh_Redirnonce(browser, redirnonce, body, dom, scheme, msgnonce)@i & Send_redirnonce(browser, redirnonce, otherbody, otherdom)@j
+    // redirnonce used immediately
+    ==> Send_Request_Nonce(msgnonce)@j 
+    // OR there has been a redirect response to that message
+    | (Ex status secondmsgnonce redirbody thirddom #l. (status = '303' | status = '307') & Continue_Redir(browser, thirddom, msgnonce, redirnonce, status, secondmsgnonce, redirbody)@l & #l < #j)"
+
+lemma SecrecyOfCredentials:
+"All #i credential bid domain. Credentials(bid, domain, credential)@i
+==> not (Ex #j. K(credential)@j) | (Ex #j. CompromiseBrowser(bid)@j) | (Ex #j. CompromiseDomain(domain)@j)"
+
+lemma SecrecyOfSessionToken:
+"All #i token bid domain. SecretSession(token, bid, domain)@i
+==> not (Ex #j. K(token)@j) | (Ex #j. CompromiseBrowser(bid)@j) | (Ex #j. CompromiseDomain(domain)@j)"
+
+lemma AgreementServerSide:
+"All server browser #i.
+Commit(server, browser) @ i
+/* and adversary did not reveal the participants' long-term keys */
+& not (Ex #r. CompromiseBrowser(browser)@r)
+& not (Ex #r. CompromiseDomain(server)@r)
+==>/* there is somebody running a session with the same parameters */
+(Ex #j. Running(browser, server) @ j & j < i)"
+
+
+end

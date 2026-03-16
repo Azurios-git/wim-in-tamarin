@@ -1,0 +1,134 @@
+theory OAuth begin
+
+#include "../wim.spthy"
+
+functions: Container/1
+
+rule preShareLoginDetails:
+    [ !ClaimDomain($Domain, 'AuthServer')
+    , !Browser(~bid, $Browser)
+    , Fr(~login) ]
+    --[Credentials($Browser, $Domain, ~login), OnlyOnce(<'PreShareLogin',$Browser, $Domain>)]->
+    [ !LoginDetails($Domain, ~login)
+    , !Secrets($Browser, $Domain, 'https', ~login)
+    ]
+
+rule SetupEndPointsAuth:
+    [ !ClaimDomain($AuthDomain, 'AuthServer') ]
+    --[Auth($AuthDomain), _restrict(not ($AuthEndPoint = $TokenEndPoint))]->
+    [ !AuthEndPoint($AuthDomain, $AuthEndPoint)
+    , !TokenEndPoint($AuthDomain, $TokenEndPoint) ]
+
+rule RegisterClient:
+    [ !ClaimDomain($AuthDomain, 'AuthServer')
+    , !ClaimDomain($ClientDomain, 'Client')
+    , Fr(~login) ]
+    --[OnlyOnce(<'RegisterClient',$ClientDomain, $AuthDomain>), Client($ClientDomain)]->
+    [ !ClientCredentials($ClientDomain, $AuthDomain, ~login)
+    , !RedirectEndPoint($ClientDomain, $AuthDomain, $RedirectEndPoint)]
+
+rule miniServerIn:
+    let body = <'AuthenticateClient', Container(<$AuthDomain, $AuthEndPoint, $ClientDomain>)> in
+    [ !ClaimDomain($ClientDomain, 'Client')
+    , !AuthEndPoint($AuthDomain, $AuthEndPoint)
+    , Server_In($Browser, $ClientDomain,'https', ~nonce, 'GET', '/init', parameters, newPlain, newSec, origin, NewReferer, NewAuth, newbody, adv)]
+    --[]->
+    [ Server_Out($ClientDomain, $Browser,'https', ~nonce, '200', NoCookies(), NoCookies(), NoLocation(), 'top', NoRefPolicy(), body, 'honest')]
+
+rule InitiateAuth:
+let docURL = <$Scheme, $DocDomain, path, params, fragment>
+    docOrigin = <$Scheme, $DocDomain> in
+   [ Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'AuthenticateClient', Container(<$AuthDomain, $AuthEndPoint, $ClientDomain>))
+    , !Secrets($Browser, $AuthDomain, 'https', ~login) ]
+   --[InitAuth(), PDAddBody(<~login, $ClientDomain,'ScopeOfRequest'>)]->
+   [ Send_Request_Browser($Browser, $TLW, 'REQ', 'https', $AuthDomain, $AuthEndPoint, NoParams(), 'bot', 'POST', NoAuth(), docOrigin, NoReferrer(), NoRefPolicy(), <~login, $ClientDomain,'ScopeOfRequest'>)
+   ,  Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'AuthenticateClient', Container(<$AuthDomain, $AuthEndPoint, $ClientDomain, 'Clicked'>)) ]
+
+
+#ifdef 303
+rule SuccessfulAuth303:
+let redirectURL = <'https', $ClientDomain, $RedirectEndPoint, NoParams() ++ <'Authcode',~authcode>, 'bot'>
+in
+    [ !ClaimDomain($AuthDomain, 'AuthServer')
+    , !AuthEndPoint($AuthDomain, $AuthEndPoint)
+    , !RedirectEndPoint($ClientDomain, $AuthDomain, $RedirectEndPoint)
+    , Fr(~authcode)
+    , !LoginDetails($AuthDomain, ~login)
+    , Server_In($Browser, $AuthDomain,'https', ~nonce, 'POST', $AuthEndPoint, parameters, newPlain, newSec, origin, NewReferer, NewAuth, <~login, $ClientDomain, 'ScopeOfRequest'>, adv)]
+    --[Test(), CredentialsSent(~login), PDAddParams(NoParams() ++ <'Authcode',~authcode>)]->
+    [ Server_Out($AuthDomain, $Browser,'https', ~nonce, '303', NoCookies(), NoCookies(), redirectURL, 'bot', NoRefPolicy(), NoBody(), 'honest')  
+    , !RedirectURL($AuthDomain,~authcode, redirectURL)]
+#else
+rule SuccessfulAuth307:
+let redirectURL = <'https', $ClientDomain, $RedirectEndPoint, NoParams() ++ <'Authcode',~authcode>, 'bot'>
+in
+    [ !ClaimDomain($AuthDomain, 'AuthServer')
+    , !AuthEndPoint($AuthDomain, $AuthEndPoint)
+    , !RedirectEndPoint($ClientDomain, $AuthDomain, $RedirectEndPoint)
+    , Fr(~authcode)
+    , !LoginDetails($AuthDomain, ~login)
+    , Server_In($Browser, $AuthDomain,'https', ~nonce, 'POST', $AuthEndPoint, parameters, newPlain, newSec, origin, NewReferer, NewAuth, <~login, $ClientDomain, 'ScopeOfRequest'>, adv)]
+    --[Test(), CredentialsSent(~login)]->
+    [ Server_Out($AuthDomain, $Browser,'https', ~nonce, '307', NoCookies(), NoCookies(), redirectURL, 'bot', NoRefPolicy(), NoBody(), 'honest')  
+    , !RedirectURL($AuthDomain,~authcode, redirectURL)]
+#endif
+
+rule GotRedirected:
+let redirectURL = <'https', $ClientDomain, $RedirectEndPoint, NoParams() ++ <'Authcode',~authcode>, 'bot'> in
+    [ !ClaimDomain($ClientDomain, 'Client')
+    , !RedirectURL($AuthDomain, ~authcode, redirectURL)
+    , !TokenEndPoint($AuthDomain, $TokenEndPoint)
+    , !ClientCredentials($ClientDomain, $AuthDomain, ~ClientCredentials)
+    , Server_In($Browser, $ClientDomain,'https', ~recvnonce, 'GET', $RedirectEndPoint , parameters ++ <'Authcode', ~authcode>, newPlain, newSec, origin, NewReferer, NewAuth, newbody, adv)
+    , Fr(~nonce)]
+    --[Done(), PDAddBody(<redirectURL, ~authcode, ~ClientCredentials>)]->
+    [Send_Request($ClientDomain,  $AuthDomain, 'https', ~nonce, 'POST', $TokenEndPoint, NoParams(), NoCookies(), NoCookies(), NoOrigin(), NoReferrer(), NoAuth(), <redirectURL, ~authcode, ~ClientCredentials>)
+    , TokenRequest($ClientDomain, $AuthDomain, ~nonce)]
+
+rule ReturnToken:
+[ !ClientCredentials($ClientDomain, $AuthDomain, ~ClientCredentials)
+, !TokenEndPoint($AuthDomain, $TokenEndPoint)
+, !RedirectURL($AuthDomain, ~authcode, redirectURL)
+, Server_In($ClientDomain, $AuthDomain,'https', ~nonce, 'POST', $TokenEndPoint , parameters, newPlain, newSec, origin, NewReferer, NewAuth, <redirectURL, ~authcode, ~ClientCredentials>, adv)
+, Fr(~token)]
+    --[TokenSent(~token)]->
+[
+    Server_Out($AuthDomain, $ClientDomain,'https', ~nonce, '200', NoCookies(), NoCookies(), NoLocation(), NoSTS(), NoRefPolicy(), ~token, 'honest')
+]
+
+rule GetToken:
+[ TokenRequest($ClientDomain, $AuthDomain, ~nonce)
+, Browser_In($AuthDomain, $ClientDomain, 'https', ~nonce, status, setcookiesplain, setcookiessec, location, sts, refpolicy, ~token)]
+--[TokenReceived(~token)]->
+[]
+
+#include "helperlemmas.spthy"
+
+lemma aux_redirect_chain_ref[reuse, use_induction]:
+"All browser nonce body dom #i. Send_redirnonce_ref(browser, nonce, body, dom)@i 
+    ==> Ex otherdom scheme msgnonce #j. Fresh_Redirnonce_Ref(browser, nonce, body, otherdom, scheme, msgnonce)@j"
+
+lemma executability:
+exists-trace
+"Ex #i. Done()@i & not (Ex #j. AdvActive()@j)
+& // Only one Redir 
+(All browser b2 domain d2 nonce n2 s1 s2 #i #j. RedirFrom(browser, domain, s1, nonce)@i & RedirFrom(b2, d2, s2, n2)@j ==> #i = #j)
+"
+
+lemma exec307Attack:
+exists-trace
+"(Ex credentials browser authdom #i #j. K(credentials)@i & Credentials(browser, authdom, credentials)@j & not (Ex #k. CompromiseDomain(authdom)@k))
+ & (All browser domain scheme #i. Send_Out(browser, domain, scheme)@i ==> scheme = 'https')
+& not (Ex #i browser. CompromiseBrowser(browser)@i)
+& All #i #j b d. CreateBrowser(b)@i & CreateBrowser(d)@j ==> b = d
+& // Only one Redir 
+(All browser b2 domain d2 nonce n2 s1 s2 #i #j. RedirFrom(browser, domain, s1, nonce)@i & RedirFrom(b2, d2, s2, n2)@j ==> #i = #j)
+"
+
+lemma secrecyOfCredentials:
+"All login authdomain browser #i #j. Credentials(browser, authdomain, login)@i & K(login)@j ==> 
+(Ex #k. CompromiseDomain(authdomain)@k) |
+(Ex #k. CompromiseBrowser(browser)@k)
+"
+
+end

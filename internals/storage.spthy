@@ -1,0 +1,56 @@
+// Rules for leaking and modifying local- and sessionstorage
+rule LeakLocalStorage:
+    [ !LeakState($Browser, $Domain, $Scheme, $TLW)[no_precomp]
+    , LocalStorage(~sid, $Browser, $Domain, $Scheme, data)[no_precomp]]
+    --[PDLeakLocalStorage(data)]->
+    [ Out(data)
+    , LocalStorage(~sid, $Browser, $Domain, $Scheme, data)]
+
+rule LeakSessionStorage:
+    [ !LeakState($Browser, $Domain, $Scheme, $TLW)[no_precomp]
+    , SessionStorage(~sid, $Browser, $Domain, $Scheme, $TLW, data)[no_precomp]]
+    --[PDLeakSessionStorage(data)]->
+    [ Out(data)
+    , SessionStorage(~sid, $Browser, $Domain, $Scheme, $TLW, data)]
+
+rule ModifyLocalStorage:
+    [ !ModifyState($Browser, $Domain, $Scheme, $TLW)[no_precomp]
+    , LocalStorage(~sid, $Browser, $Domain, $Scheme, data)[no_precomp]
+    , In(newdata)
+    , Browser_State(~bid,$Browser,'Ready')[no_precomp] ]
+    -->
+    [ Browser_State(~bid, $Browser, 'Ready')[no_precomp]
+    , LocalStorage(~sid, $Browser, $Domain, $Scheme, newdata)]
+
+rule ModifySessionStorage:
+    [ !ModifyState($Browser, $Domain, $Scheme, $TLW)[no_precomp]
+    , SessionStorage(~sid, $Browser, $Domain, $Scheme, $TLW, data)[no_precomp]
+    , In(newdata)
+    , Browser_State(~bid, $Browser, 'Ready')[no_precomp] ]
+    -->
+    [ Browser_State(~bid, $Browser, 'Ready')[no_precomp]
+    , SessionStorage(~sid, $Browser, $Domain, $Scheme, $TLW, newdata)]
+
+rule AddLocalStorage:
+    [ !ModifyState($Browser, $Domain, $Scheme, $TLW)[no_precomp]
+    , Fr(~sid)
+    , In(newdata)
+    , Browser_State(~bid, $Browser, 'Ready')[no_precomp] ]
+    -->
+    [ Browser_State(~bid, $Browser, 'Ready')[no_precomp]
+    , LocalStorage(~sid, $Browser, $Domain, $Scheme, newdata)]
+
+rule AddSessionStorage:
+    [ !ModifyState($Browser, $Domain, $Scheme, $TLW)[no_precomp]
+    , Fr(~sid)
+    , In(newdata)
+    , Browser_State(~bid, $Browser, 'Ready')[no_precomp] ]
+    -->
+    [ Browser_State(~bid, $Browser, 'Ready')[no_precomp]
+    , SessionStorage(~sid, $Browser, $Domain, $Scheme, $TLW, newdata)]
+
+lemma sourceSessionStorageLeak[sources]:
+"All data #i. PDLeakSessionStorage(data)@i ==> data = 'bot' | (Ex #j. !KU(data) @ j & j < i) | (Ex #j. PDAddSessionStorage(data)@j & j < i)"
+
+lemma sourceLocalStorageLeak[sources]:
+"All data #i. PDLeakLocalStorage(data)@i ==> data = 'bot' | (Ex #j. !KU(data) @ j & j < i) | (Ex #j. PDAddLocalStorage(data)@j & j < i)"

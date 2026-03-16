@@ -1,0 +1,529 @@
+builtins: multiset
+
+functions: uninit/0, NoBody/0, NoOrigin/0, NoReferrer/0, NoRefPolicy/0, NoSTS/0, NoCookies/0, NoLocation/0, NoAuth/0, NoParams/0
+
+#include "internals/networkleaks.spthy"
+#include "internals/sources.spthy"
+
+#ifdef storage
+#include "internals/storage.spthy"
+#endif
+
+// Creating Browser & Storage
+rule CreateBrowser:
+    [Fr(~bid)]
+    --[OnlyOnce(<'ClaimDomain', $Browser>), CreateBrowser(~bid)]->
+    [ !Browser(~bid, $Browser)
+    , Browser_State(~bid, $Browser, 'Ready')[-] ]
+
+rule CreateCookies:
+    [ Fr(~cid)
+    , !Browser(~bid, $Browser) ]
+    --[OnlyOnce(<'CreateCookies',~bid, $Domain>), SecCookiesCreated(~cid)]->
+    [ CookiesSec(~cid, $Browser, $Domain, NoCookies())[-]
+    , CookiesPlain(~cid, $Browser, $Domain, NoCookies())[-] ]
+
+// Claim domain for user-defined server
+rule ClaimDomain:
+    []
+    --[OnlyOnce(<'ClaimDomain', $Domain>), ClaimDomainAF($Domain, $Server)]->
+    [!ClaimDomain($Domain, $Server)]
+
+// Open site via URLbar
+// As per Alg. 9, l25, fragment is a PV
+rule OpenURL:
+    [ Fr(~msgnonce)
+    , Fr(~redirnonce)
+    , In(parameters)
+    , !Browser(~bid, $Browser) ]
+    --[OpenUrl(), Fresh_Redirnonce($Browser, ~redirnonce, NoBody(), $Domain, $Scheme, ~msgnonce)]->
+    [ !TLW($Tlw, $Browser)
+    , Browser_Send_HTTP($Browser, $Tlw, 'REQ', $Scheme, $Domain, $Path, parameters, $fragment, 'GET',  NoAuth(), NoOrigin(), NoReferrer(),  NoRefPolicy(), NoBody(), 'honest', ~redirnonce, ~msgnonce) ]
+
+// Referrer-Policy adherence rules
+// TODO: Remove ifdef once performance seems okay
+#ifdef refpol
+rule NoReferrer:
+    [ Browser_Send_HTTP($Browser, wid_or_did, $type, $scheme, $Domain, $Path, parameters, fragment, $method, auth, origin, NoReferrer(), referrerpolicy, body, adv, ~redirnonce, ~msgnonce) ]
+    -->
+    [ Browser_Send_HTTP_Post_Ref($Browser, wid_or_did, $type, $scheme , $Domain, $Path, parameters, fragment, $method, auth, origin, NoReferrer(), body, adv, ~redirnonce, ~msgnonce) ]
+
+rule NoRefPolicy:
+let referrer = <$RefScheme, $RefDomain, $RefPath, RefParams, RefFragment>
+    strippedreferrer = <$RefScheme, $RefDomain, $RefPath, RefParams, 'bot'>
+in
+    [ Browser_Send_HTTP($Browser, wid_or_did, $type, $scheme, $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, NoRefPolicy(), body, adv, ~redirnonce, ~msgnonce) ]
+    -->
+    [ Browser_Send_HTTP_Post_Ref($Browser, wid_or_did, $type, $scheme , $Domain, $Path, parameters, fragment, $method, auth, origin, strippedreferrer, body, adv, ~redirnonce, ~msgnonce) ]
+
+rule RefPolicyOrigin:
+let referrer = <$RefScheme, $RefDomain, $RefPath, RefParams, RefFragment>
+    strippedreferrer = <$RefScheme, $RefDomain, '/', NoParams(), 'bot'>
+in
+    [ Browser_Send_HTTP($Browser, wid_or_did, $type, $scheme, $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, 'origin', body, adv, ~redirnonce, ~msgnonce) ]
+    -->
+    [ Browser_Send_HTTP_Post_Ref($Browser, wid_or_did, $type, $scheme , $Domain, $Path, parameters, fragment, $method, auth, origin, strippedreferrer, body, adv, ~redirnonce, ~msgnonce) ]
+
+rule RefPolicyNoRef:
+    [ Browser_Send_HTTP($Browser, wid_or_did, $type, $scheme, $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, 'noreferrer', body, adv, ~redirnonce, ~msgnonce) ]
+    -->
+    [ Browser_Send_HTTP_Post_Ref($Browser, wid_or_did, $type, $scheme , $Domain, $Path, parameters, fragment, $method, auth, origin, NoReferrer(), body, adv, ~redirnonce, ~msgnonce) ]
+#else
+// For debugging purposes
+// TODO: Remove this once refpol flag is unnecessary
+rule RefPolChange:
+    [ Browser_Send_HTTP($Browser, wid_or_did, $type, $scheme, $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, referrerpolicy, body, adv, ~redirnonce, ~msgnonce) ]
+    -->
+    [ Browser_Send_HTTP_Post_Ref($Browser, wid_or_did, $type, $scheme , $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, body, adv, ~redirnonce, ~msgnonce) ]
+#endif
+
+// Send request via HTTP
+rule BrowserSendPlain:
+    [ Browser_Send_HTTP_Post_Ref($Browser, wid_or_did, type,'http', $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, body, adv, ~redirnonce, ~msgnonce)[no_precomp]
+    , Browser_State(~bid, $Browser, 'Ready')[no_precomp]
+    , CookiesPlain(~cid, $Browser, $Domain, plaincookies)[no_precomp]]
+    --[NotSTS(~bid, $Domain), SendTo($Domain), PlainCookiesLoop(~cid, $Browser, $Domain, plaincookies)]->
+    [ Browser_Out($Browser, wid_or_did, $Domain, 'http', type, fragment, ~msgnonce, $method, $Path, parameters, plaincookies, NoCookies, origin, referrer, auth, body, adv, ~redirnonce)
+    , CookiesPlain(~cid, $Browser, $Domain, plaincookies)[-]
+    , Browser_State(~bid, $Browser, 'Ready')[-] ]
+
+// Send request via HTTPS
+rule BrowserSendSec:
+    [ Browser_Send_HTTP_Post_Ref($Browser, wid_or_did, type,'https', $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, body,adv, ~redirnonce, ~msgnonce)[no_precomp]
+    , Browser_State(~bid, $Browser, 'Ready')[-]
+    , CookiesPlain(~cid, $Browser, $Domain, plainCookies)[no_precomp]
+    , CookiesSec(~cid, $Browser, $Domain, secCookies)[no_precomp] ]
+    --[SendTo($Domain), SecCookiesLoop(~cid, $Browser, $Domain, secCookies), Sent(), SendSec($Browser, $Domain, ~redirnonce)
+      , PlainCookiesLoop(~cid, $Browser, $Domain, plainCookies)]->
+    [ Browser_Out($Browser, wid_or_did, $Domain, 'https', type, fragment, ~msgnonce, $method, $Path, parameters, plainCookies, secCookies, origin, referrer, auth, body, adv, ~redirnonce)
+    , CookiesPlain(~cid, $Browser, $Domain, plainCookies)[-]
+    , CookiesSec(~cid, $Browser, $Domain, secCookies)[-]
+    , Browser_State(~bid, $Browser, 'Ready')[-] ]
+
+// Once a browser receives an STS-header, all future requests to that domain must be HTTPS
+restriction AdhereToSTS:
+"All bid domain #i. NotSTS(bid, domain)@i ==> not (Ex #j. STS(bid, domain, 'top')@j)"
+
+// Split processing into three branches:
+// Securecookies, Plaincookies, and the Document
+rule ProcessResponse:
+    [ Browser_State(~bid, $Browser, 'Ready')[-]
+    , Browser_In($Domain, $Browser, $Scheme, ~nonce, $status, setcookiesplain, setcookiessec, location, STS, refpolicy, body)
+    , Fr(~plainprocessingnonce)
+    , Fr(~secprocessingnonce)
+    , Fr(~docprocessingnonce) ]
+    --[ STS(~bid, $Domain, STS), ReceiveSecCookies($Browser, $Domain, setcookiessec), ReceivePlainCookies($Browser, $Domain, setcookiesplain)]->
+    [ Browser_State(~bid, $Browser, <'HandlingResponse', ~plainprocessingnonce, ~secprocessingnonce, ~docprocessingnonce>)
+    , ProcessingDocument(~docprocessingnonce, $Browser, $Scheme, ~nonce, $status, body, location, STS, refpolicy, body)
+    , IncomingPlain(~plainprocessingnonce, $Browser, setcookiesplain, $Domain)
+    , IncomingSec(~secprocessingnonce, $Browser, setcookiessec, $Domain) ]
+
+rule AddUninitialisedCookiePlain:
+let cookie = <$name, uninit()> in
+    [ CookiesPlain(~cid, $Browser, $Domain, oldcookies) ]
+    --[OnlyOnce(<'InitPlainCookie', $name>), PlainCookiesAddSingle(~cid, $Browser, $Domain, cookie), Uninit(oldcookies)]->
+    [ CookiesPlain(~cid, $Browser, $Domain, oldcookies ++ cookie)]
+
+rule AddUninitialisedCookieSec:
+let cookie = <$name, uninit()> in
+    [ CookiesSec(~cid, $Browser, $Domain, oldcookies) ]
+    --[OnlyOnce(<'InitSecCookie', $name>), SecCookiesMod(~cid, oldcookies ++ cookie), SecCookiesAddSingle(~cid,$Browser, $Domain, cookie), Uninit(oldcookies)]->
+    [ CookiesSec(~cid, $Browser, $Domain, oldcookies ++ <$name, uninit()>)]
+
+// We simply do not allow __HOST cookies to be sent as non-secure cookies
+// TODO: Document that __HOST should be used as name and other values part of the content
+rule ProcessCookiesPlainLoopReplace:
+    let cookie = <$name, content> in
+    [ IncomingPlain(~processid, $Browser, cookie ++ rest, $Domain)
+    , CookiesPlain(~cid, $Browser, $Domain, oldcookies ++ <$name, oldcontent>)[-]]
+    --[_restrict(not ($name = '__HOST'))
+      , IncomingPlainLoop(~processid, $Browser, $Domain, cookie ++ rest)
+      , PlainCookiesLoop(~cid, $Browser, $Domain, oldcookies ++ <$name, oldcontent>)
+      , PlainCookiesAddSingle(~cid, $Browser, $Domain, cookie)]->
+    [ CookiesPlain(~cid, $Browser, $Domain, oldcookies ++ cookie)[-]
+    , IncomingPlain(~processid, $Browser, rest, $Domain) ]
+
+rule ProcessCookiesPlainEnd:
+    [IncomingPlain(~processid, $Browser, NoCookies(), $Domain)]
+    --[]->
+    [PlainProcessed(~processid, $Browser)]
+
+rule ProcessCookiesSecLoopReplace:
+    let cookie = <$name, content> in
+    [ IncomingSec(~processid, $Browser, cookie ++ rest, $Domain)
+    , CookiesSec(~cid, $Browser, $Domain, oldcookies ++ <$name, oldcontent>)[-]]
+    --[SecCookiesMod(~cid, oldcookies ++ cookie), SecCookieAdd($Browser, $Domain, cookie ++ rest, ~processid), SecCookiesAddSingle(~cid,$Browser, $Domain, cookie), SecCookiesLoop(~cid, $Browser, $Domain, oldcookies ++ <$name, oldcontent>), AddSecLoop(~processid)
+    , IncomingSecLoop(~processid, $Browser, $Domain, cookie ++ rest)]->
+    [ CookiesSec(~cid, $Browser, $Domain, oldcookies ++ cookie)[-]
+    , IncomingSec(~processid, $Browser, rest, $Domain) ]
+
+rule ProcessCookieSecEnd:
+    [IncomingSec(~processid, $Browser, NoCookies(), $Domain)]
+    -->
+    [SecProcessed(~processid, $Browser)]
+
+// Different handling of REQ/XHR responses
+rule ProcessResponseREQ:
+    let URL = <$Scheme, $Domain, $path, params, fragment>
+        body = <$script, scriptstate> in
+    [ ProcessingDocument(~processid, $Browser, $Scheme, ~nonce, $status, body, location, STS, refpolicy, body)
+    , BrowserData($Browser,$Domain, $Scheme,method, $path, ~nonce, 'REQ', fragment, origin, params, referrer, $TLW, reqbody, ~redirnonce)
+    , !TLW($TLW, $Browser)
+    , Fr(~did)
+    ]
+    --[_restrict(not($status = '303' | $status = '307')), ResponseLink(~nonce, body)]->
+    [ Document(~did, $Browser, $TLW, URL, referrer, refpolicy, $script, scriptstate)
+    , ProcessedDocument(~processid, $Browser)]
+
+rule ProcessResponseXHR:
+    let URL = <$Scheme, $Domain, $path, params, fragment>
+    headers = <location, STS, refpolicy>
+    in
+    [ ProcessingDocument(~processid, $Browser, $Scheme, ~nonce, $status, body, location, STS, refpolicy, body)
+    , BrowserData($Browser,$Domain, $Scheme,method, path, ~nonce, 'XHR', fragment,origin, params, referrer, <~did, ~refid>, reqbody, ~redirnonce)]
+    --[_restrict(not($status = '303' | $status = '307'))]->
+    [ ScriptinputXHR(~did, body, headers, ~refid)
+    , ProcessedDocument(~processid, $Browser)]
+
+rule FinishProcessing:
+    [ ProcessedDocument(~docprocessid, $Browser)
+    , PlainProcessed(~plainprocessid, $Browser)
+    , SecProcessed(~secprocessid, $Browser)
+    , Browser_State(~bid, $Browser, <'HandlingResponse', ~plainprocessid, ~secprocessid, ~docprocessid>) ]
+    --[]->
+    [Browser_State(~bid, $Browser, 'Ready')[-]]
+
+
+// Redirects are (currently) severly degrading performance
+#ifdef redirects
+// Logic for handling redirect status codes
+rule ProcessRedirect:
+    let location = <$respScheme, $respDomain, resppath, respparams, respfragment>
+    in
+    [ ProcessingDocument(~processid, $Browser, $requestScheme, ~nonce, $status, body, location, STS, refpolicy, body)
+    , BrowserData($Browser,$requestDomain, $requestScheme, $method, path, ~nonce, 'REQ', requestfragment, requestorigin, params,referrer, $TLW, reqbody, ~redirnonce) ]
+    --[_restrict($status = '303' | $status = '307'), RedirFrom($Browser, $requestDomain, $requestScheme, ~redirnonce), ]->
+    [ ProcessRedirect(~processid, $Browser, ~nonce, $status, requestorigin, $method, reqbody, refpolicy, $respScheme, $respDomain, resppath, respparams, respfragment, requestfragment, $requestDomain, $requestScheme, $respDomain, $respScheme, referrer, ~redirnonce)]
+
+rule ProcessRedirectFragmentEmpty:
+    [ ProcessRedirect(~processid, $Browser, ~nonce, $status, requestorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, 'bot', requestfragment, $requestDomain, $requestScheme, $respDomain, $respScheme, referrer, ~redirnonce)]
+    --[]->
+    [ ProcessRedirectFragment(~processid, $Browser, ~nonce, $status, requestorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, requestfragment, $requestDomain, $requestScheme, $respDomain, $respScheme, referrer, ~redirnonce)]
+
+rule ProcessRedirectFragmentGiven:
+    [ ProcessRedirect(~processid, $Browser, ~nonce, $status, requestorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, respfragment, requestfragment, $requestDomain, $requestScheme, $respDomain, $respScheme, referrer, ~redirnonce)]
+    --[_restrict(not(respfragment = 'bot'))]->
+    [ ProcessRedirectFragment(~processid, $Browser, ~nonce, $status, requestorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, respfragment, $requestDomain, $requestScheme, $respDomain, $respScheme, referrer, ~redirnonce)]
+
+rule ProcessRedirectOriginOkay:
+    [ ProcessRedirectFragment(~processid, $Browser, ~nonce, $status, requestorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, finalfragment, $requestDomain, $requestScheme, $respDomain, $respScheme, referrer, ~redirnonce)]
+    --[OriginRedirectRestriction(requestorigin, $requestDomain, $requestScheme, $respDomain, $respScheme)]->
+    [ ProcessRedirectOrigin(~processid, $Browser,~nonce, $status, requestorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, finalfragment, referrer, ~redirnonce)]
+
+rule ProcessRedirectOriginFail:
+    [ ProcessRedirectFragment(~processid, $Browser, ~nonce, $status, requestorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, finalfragment, $requestDomain, $requestScheme, $respDomain, $respScheme, referrer, ~redirnonce)]
+    --[OriginRedirectRestrictionFail(requestorigin, $requestDomain, $requestScheme, $respDomain, $respScheme)]->
+    [ ProcessRedirectOrigin(~processid, $Browser,~nonce, $status, NoOrigin(), $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, finalfragment, referrer, ~redirnonce)]
+
+rule ProcessRedirect303BadMethod:
+    [ProcessRedirectOrigin(~processid, $Browser,~nonce, '303', finalorigin, $method, body, refpolicy, $respScheme, $respDomain,resppath, respparams, finalfragment, referrer, ~redirnonce)]
+    --[_restrict(not($method = 'GET' | $method = 'HEAD'))]->
+    [ProcessRedirectFinish(~processid, $Browser,~nonce, '303', finalorigin, 'GET', NoBody(), refpolicy, $respScheme, $respDomain,resppath, respparams, finalfragment, referrer, ~redirnonce)]
+
+rule ProcessRedirect303:
+    [ProcessRedirectOrigin(~processid, $Browser,~nonce, '303', finalorigin, $method, body, refpolicy, $respScheme, $respDomain,resppath, respparams, finalfragment, referrer, ~redirnonce)]
+    --[_restrict($method = 'GET' | $method = 'HEAD')]->
+    [ProcessRedirectFinish(~processid, $Browser,~nonce, '303', finalorigin, $method, body, refpolicy, $respScheme, $respDomain,resppath, respparams, finalfragment, referrer, ~redirnonce)]
+
+rule ProcessRedirect307:
+    [ProcessRedirectOrigin(~processid, $Browser,~nonce, '307', finalorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, finalfragment, referrer, ~redirnonce)]
+    -->
+    [ProcessRedirectFinish(~processid,$Browser, ~nonce, '307', finalorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, finalfragment, referrer, ~redirnonce)]
+
+rule ProcessRedirectFinish:
+    [ProcessRedirectFinish(~processid, $Browser,~nonce, $status, finalorigin, $method, body, refpolicy, $respScheme, $respDomain, resppath, respparams, finalfragment, referrer, ~redirnonce)
+    , Fr(~msgnonce)]
+    --[Continue_Redir($Browser, $respDomain, ~nonce, ~redirnonce, $status, ~msgnonce, body)]->
+    [Browser_Send_HTTP($Browser, $Tlw, 'REQ', $respScheme, $respDomain, resppath, respparams, finalfragment, $method, NoAuth(), finalorigin, referrer, refpolicy, body, 'honest', ~redirnonce, ~msgnonce)
+    , ProcessedDocument(~processid, $Browser)]
+
+restriction OriginRedirect:
+"All origscheme origDomain domain scheme respDomain respScheme #i. OriginRedirectRestriction(<origDomain, origscheme>, domain, scheme, respDomain, respScheme)@i ==>
+    (origscheme = scheme & origDomain = domain) | (respScheme = scheme & respDomain = domain)"
+
+restriction OriginRedirectFail:
+"All origscheme origDomain domain scheme respDomain respScheme #i. OriginRedirectRestrictionFail(<origscheme, origDomain>, domain, scheme, respDomain, respScheme)@i ==>
+    not((origscheme = scheme & origDomain = domain) | (respScheme = scheme & respDomain = domain))"
+
+// TODO: Check if this is proper or even necessary
+// restriction RedirectLoops:
+// "All dom browser code #i. AdvRedirectingFrom(browser, dom, code)@i ==>
+//     ((not (code = '303' | code = '307')) | not ((Ex location scheme path params fragment othercode #j. AdvRedirectingTo(browser, location, othercode)@j & (location = <scheme, dom, path, params, fragment>) & (othercode = '303' | othercode = '307'))))"
+
+#endif
+
+
+// Network Structure
+rule SendRequest:
+    [Browser_Out($Browser, window_or_doc_reference, $Domain, $Scheme, $type, fragment, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, adv, ~redirnonce)[no_precomp]]
+    --[Send_Request_Nonce(~nonce), SR(), SendSecCookies(seccookies, $Scheme), SendReferer(referrer), Send_Out($Browser, $Domain, $Scheme), SendCookiesPlain(plaincookies), SendCookiesSec(seccookies), RequestLink(~nonce)
+    , Send_redirnonce($Browser, ~redirnonce, body, $Domain), SentRequest($Browser, $Domain, $Scheme, ~redirnonce, ~nonce), Sent_Method($Browser, $method, body)
+    // , PDLeakBody(body)
+    , PDLeakAuth(auth)
+    , PDLeakParams(parameters)
+    , PDLeakRef(referrer)
+    , PDLoopBody(body)]->
+    [ !Request($Browser, $Domain, $Scheme, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, adv)
+    , BrowserData($Browser,$Domain, $Scheme, $method, $path, ~nonce, $type, fragment, origin, parameters, referrer, window_or_doc_reference, body, ~redirnonce)]
+
+rule GetRequest:
+    [!Request($Browser, $Domain, $Scheme, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, adv)]
+    -->
+    [Server_In($Browser, $Domain,$Scheme, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, adv)]
+
+rule SendResponse:
+    [Server_Out($Domain, $Browser,$Scheme, ~nonce, $status, setcookiesplain, setcookiessec, location, sts, refpolicy, body, adv)]
+    --[LinkMiddle(~nonce, body), GetResponse($Browser, $Domain, ~nonce, $status)]->
+    [!Response($Domain, $Browser,$Scheme, ~nonce, $status, setcookiesplain, setcookiessec, location, sts, refpolicy, body, adv)]
+
+rule GetResponse:
+    [!Response($Domain, $Browser,$Scheme, ~nonce, status, setcookiesplain, setcookiessec, location, sts, refpolicy, body, adv)]
+    -->
+    [Browser_In($Domain, $Browser, $Scheme, ~nonce, status, setcookiesplain, setcookiessec, location, sts, refpolicy, body)]
+
+// Rules for user models
+// stripping away adv 
+rule ServerOutUser:
+    [Send_Reply($Domain, $Browser,$Scheme, ~nonce, $status, setcookiesplain, setcookiessec, location, sts, refpolicy, body)]
+    -->
+    [Server_Out($Domain, $Browser,$Scheme, ~nonce, $status, setcookiesplain, setcookiessec, location, sts, refpolicy, body, 'honest')]
+
+// this also merges cookies into a single term
+rule ServerInUser:
+    [Server_In($Browser, $Domain,$Scheme, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, adv)]
+    --[RR()]->
+    [Receive_Request($Browser, $Domain,$Scheme, ~nonce, $method, $path, parameters, plaincookies ++ seccookies, origin, referrer, auth, body)]
+
+rule BrowserOutUser:
+    [Send_Request_Browser($Browser, wid_or_did, $type, $scheme, $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, referrerpolicy, body)
+    , Fr(~redirnonce)
+    , Fr(~msgnonce)]
+    --[Fresh_Redirnonce($Browser, ~redirnonce, body, $Domain, $scheme, ~msgnonce)]->
+    [Browser_Send_HTTP($Browser, wid_or_did, $type, $scheme, $Domain, $Path, parameters, fragment, $method, auth, origin, referrer, referrerpolicy, body, 'honest', ~redirnonce, ~msgnonce)]
+
+// simple requests/responses for easier server-server communication
+rule ServerCreateRequestUser:
+    [Send_Request($Browser, $Domain, $Scheme, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body)
+    , Fr(~redirnonce)]
+    --[Fresh_Redirnonce($Browser, ~redirnonce, body, $Domain, $Scheme, ~nonce)]->
+    [Browser_Out($Browser, $RandomTLW, $Domain, $Scheme, $type, $fragment, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, 'honest', ~redirnonce)]
+
+rule ServerReceiveReplyUser:
+    [Browser_In($Domain, $Browser, $Scheme, ~nonce, status, setcookiesplain, setcookiessec, location, sts, refpolicy, body)]
+    -->
+    [Receive_Reply($Domain, $Browser, $Scheme, ~nonce, status, setcookiesplain, setcookiessec, location, sts, refpolicy, body)]
+
+// Adversary rules: HTTP modifications
+rule HTTPModifyRequest:
+    let headers = <NewOrigin, newPlain, newSec, NewReferer, NewAuth> in
+    [ In(<newparameters, headers, newbody>)
+    , !Request($Browser, $Domain, 'http', ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, 'honest')]
+    --[AdvActive()]->
+    [Server_In($Browser, $Domain,'http', ~nonce, $newmethod, $newpath, newparameters, newPlain, newSec, NewOrigin, NewReferer, NewAuth, newbody, 'adversary')]
+
+rule HTTPModifyResponse:
+    let newheaders = <newplaincookies, newseccookies, NewLocation, NewSTS, NewRefPolicy> in
+    [ In(<newheaders, newbody>)
+    , !Response($Domain, $Browser,'http', ~nonce, $status, setcookiesplain, setcookiessec, location, sts, refpolicy, body, 'honest')]
+    --[AdvActive(), AdvRedirectingFrom($Browser, $Domain, $newstatus), AdvRedirectingTo($Browser, NewLocation, $newstatus), LinkAfterMiddle(~nonce, body)]->
+    [ Browser_In($Domain, $Browser, 'http', ~nonce, $newstatus, newplaincookies, newseccookies, NewLocation, NewSTS, NewRefPolicy, newbody)]
+
+// This rule is to let an adversary respond to an HTTP request without having to deal with leaking the nonce
+rule HTTPGenerateResponse:
+    let headers = <respplaincookies, respseccookies, resplocation> in
+    [ In(<headers, respbody>),
+    Server_In($Browser, $Domain,'http', ~nonce, $method, $parth, parameters, plaincookies, seccookies, origin, referer, auth, newbody, 'honest')]
+    --[AdvActive(), AdvRedirectingFrom($Browser, $Domain, $Status), AdvRedirectingTo($Browser, resplocation, $Status)]->
+    [Server_Out($Domain, $Browser, $NewScheme, ~nonce, $Status, respplaincookies, respseccookies, resplocation, $newSTS, $newRefPolicy, respbody, 'adversary')]
+
+// Adversary rules: Compromise
+// OnlyOnce-d to make attacks etc. simpler, since there's no need to compromise the same domain or browser multiple times
+rule CompromiseDomain:
+    []
+    --[CompromiseDomain($Domain), OnlyOnce(<'CompromiseDomain', $Domain>), AdvActive()]->
+    [!CompromisedDomain($Domain)]
+
+rule CompromiseBrowser:
+    [!Browser(~bid, $Browser)]
+    --[CompromiseBrowser($Browser), OnlyOnce(<'CompromiseBrowser', $Browser>), AdvActive()]->
+    [!CompromisedBrowser($Browser)]
+
+// A compromised browser can leak/modify state of any origin and TLW
+rule CompromisedBrowserState:
+    [!CompromisedBrowser($Browser)]
+    --[OnlyOnce(<'LeakBrowserState', $Browser, $Domain, $Scheme, $TLW>), AdvActive()]->
+    [!LeakState($Browser, $Domain, $Scheme, $TLW), !ModifyState($Browser, $Domain, $Scheme, $TLW)]
+
+
+// Adversary rules for a compromised server
+// A compromised Server can send arbitrary replies
+rule CompromisedServerSend:
+    [ In(<respplaincookies, respseccookies, respbody, resplocation>)
+    , !CompromisedDomain($Domain)
+    , Server_In($Browser, $Domain,$Scheme, ~nonce, $method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, adv)]
+    --[AdvActive(), AdvRedirectingFrom($Browser, $Domain, $Status), AdvRedirectingTo($Browser, resplocation, $Status)]->
+    [Server_Out($Domain, $Browser, $NewScheme, ~nonce, $Status, respplaincookies, respseccookies, resplocation, $newSTS, $newRefPolicy, respbody, 'adversary')]
+
+// Persistent http-nonce fact?
+// Bei compromised browser, keine browser-state-writes?
+// Adversary message sends nicht zu persistent facts?
+// Keine doppelte adversary interaction bei http-message sends
+
+
+// TODO: Check again IF this rule is necessary
+// rule CompromisedServerModify:
+//     let newheaders = <newcookiesplain, newcookiessec, newLocation, newReferer> in
+//     [ In(<newstatus, newheaders, newbody>)
+//     , !CompromisedDomain($Domain)
+//     , !Response($Domain, $Browser,$Scheme, ~nonce, $Status, setcookiesplain, setcookiessec, location, sts, refpolicy, body, 'honest') ]
+//     --[AdvActive(), AdvRedirectingFrom($Browser, $Domain, $Status), AdvRedirectingTo($Browser, newLocation, $Status)]->
+//     [ Browser_In($Domain, $Browser,$Scheme, ~nonce, newstatus, newcookiesplain, newcookiessec, newLocation, $newSTS, $newRefPolicy, newbody)  ]
+
+// This rule allows an adversary-controller browser to generate new requests
+// note that this rule uses Browser_Out instead of Browser_Send_HTTP to allow adversarial cookie control
+rule CompromisedBrowserSend:
+    let headers = <Origin, Referer, Auth>
+        messageparameters = <window_or_doc_reference, fragment, parameters, plaincookies, seccookies, headers, body> in
+    [ !CompromisedBrowser($Browser)
+    , In(messageparameters)
+    , Fr(~msgnonce)
+    , Fr(~redirnonce)]
+    --[AdvActive(), Fresh_Redirnonce($Browser, ~redirnonce, body, $Domain, $Scheme, ~msgnonce)]->
+    [Browser_Out($Browser, window_or_doc_reference, $Domain, $Scheme, $type, fragment, ~msgnonce, $method, $path, parameters, plaincookies, seccookies, Origin,  Referer, Auth, body, 'adversary', ~redirnonce)]
+
+// Adversary script
+// Once an adversary script is loaded, the state of its origin can be leaked and modified
+// And scriptactions can now be performed
+rule AdversaryScript:
+   let docURL = <$Scheme, $DocDomain, $path, params, fragment> in
+   [ Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'Adversaryscript', scriptstate) ]
+   --[AdvActive()]->
+   [ !LeakState($Browser, $DocDomain, $Scheme, $TLW)
+   , !ModifyState($Browser, $DocDomain, $Scheme, $TLW)
+   , !AdvScript($Browser, ~did, docURL, refpolicy) ]
+
+// TODO: AdvScript Cookie Manipulation
+
+rule AdversaryRunScriptFormPost:
+   let docURL = <$DocScheme, $DocDomain, $docpath, params, docfragment>
+   strippedURL = <$DocScheme, $DocDomain, $docpath, params, 'bot'>
+   docOrigin = <$DocDomain, $DocScheme> in
+   [ !AdvScript($Browser, ~did, docURL, refpolicy)
+   , In(<data, parameters, fragment>)
+    , Fr(~redirnonce)
+    , Fr(~msgnonce)]
+   --[AdvActive(), Fresh_Redirnonce($Browser, ~redirnonce, data, $Domain, $Scheme, ~msgnonce)]->
+   [ Browser_Send_HTTP($Browser, $TLW, 'REQ', $Scheme, $Domain, $Path, parameters, fragment, 'POST', NoAuth(), docOrigin, strippedURL, refpolicy,  data, 'honest', ~redirnonce, ~msgnonce) ]
+
+#ifdef Advscript
+// HREF and Iframe are similar enough to use one shared rule
+rule AdversaryRunScriptHrefIframe:
+   let docURL = <$DocScheme, $DocDomain, $docpath, params, docfragment>
+   strippedURL = <$DocScheme, $DocDomain, $docpath, params, 'bot'>
+   docOrigin = <$DocDomain, $DocScheme> in
+   [ !AdvScript($Browser, ~did, docURL, refpolicy)
+   , In(<parameters, fragment>)
+   , Fr(~redirnonce)
+   , Fr(~msgnonce)]
+   --[AdvActive(), _restrict($Newrefpolicy = refpolicy | $Newrefpolicy = 'noreferrer'), Fresh_Redirnonce($Browser, ~redirnonce, NoBody(), $Domain, $Scheme, ~msgnonce)]->
+   [ Browser_Send_HTTP($Browser, $TLW, 'REQ', $Scheme, $Domain, $Path, parameters, fragment, 'GET', NoAuth(), NoOrigin(), strippedURL, $Newrefpolicy, NoBody(), 'honest', ~redirnonce, ~msgnonce) ]
+
+rule AdversaryRunScriptFormGet:
+   let docURL = <$DocScheme, $DocDomain, $docpath, params, docfragment>
+   strippedURL = <$DocScheme, $DocDomain, $docpath, params, 'bot'>
+   docOrigin = <$DocDomain, $DocScheme> in
+   [ !AdvScript($Browser, ~did, docURL, refpolicy)
+   , In(<parameters, fragment>)
+   , Fr(~redirnonce)
+   , Fr(~msgnonce)]
+   --[AdvActive(), Fresh_Redirnonce($Browser, ~redirnonce, NoBody(), $Domain, $Scheme, ~msgnonce)]->
+   [ Browser_Send_HTTP($Browser, $TLW, 'REQ', $Scheme, $Domain, $Path, parameters, fragment, 'GET', NoAuth(), NoOrigin(), strippedURL, refpolicy, NoBody(), 'honest', ~redirnonce, ~msgnonce) ]
+
+rule AdversaryRunScriptXHRGetHead:
+    let docURL = <$DocScheme, $DocDomain, $docpath, params, docfragment>
+    strippedURL = <$DocScheme, $DocDomain, $docpath, params, 'bot'>
+    docOrigin = <$DocDomain, $DocScheme> in
+    [ !AdvScript($Browser, ~did, docURL, refpolicy)
+    , Fr(~refid)
+    , In(<data, parameters, fragment>)
+   , Fr(~redirnonce)
+   , Fr(~msgnonce)]
+    --[AdvActive(), Eq($Domain, $DocDomain), Eq($DocScheme, $Scheme), _restrict($method = 'GET' | $method = 'HEAD'), Fresh_Redirnonce($Browser, ~redirnonce, NoBody(), $Domain, $Scheme, ~msgnonce)]->
+    [ Browser_Send_HTTP($Browser, <~did, ~refid>, 'XHR', $Scheme, $Domain, $Path, parameters, fragment, $method, NoAuth(), NoOrigin(), strippedURL, refpolicy, NoBody(), 'honest', ~redirnonce, ~msgnonce) ]
+
+rule AdversaryRunScriptXHROther:
+    let docURL = <$DocScheme, $DocDomain, $docpath, params, docfragment>
+    strippedURL = <$DocScheme, $DocDomain, $docpath, params, 'bot'>
+    docOrigin = <$DocDomain, $DocScheme> in
+    [ !AdvScript($Browser, ~did, docURL, refpolicy)
+    , Fr(~refid)
+    , In(<data, parameters, fragment>)
+   , Fr(~redirnonce)
+   , Fr(~msgnonce)]
+    --[AdvActive(),_restrict(not($method = 'GET' | $method = 'HEAD' | $method = 'TRACE' | $method = 'CONNECT' | $method = 'TRACK')), Fresh_Redirnonce($Browser, ~redirnonce, data, $Domain, $Scheme, ~msgnonce)]->
+    [ Browser_Send_HTTP($Browser, <~did, ~refid>, 'XHR', $Scheme, $Domain, $Path, parameters, fragment, $method, NoAuth(), docOrigin, strippedURL, refpolicy, data, 'honest', ~redirnonce, ~msgnonce) ]
+
+// Note: This rule loops the other documentfact which makes proofs somewhat complicated and is the reason for the DocLoop-AF
+// Unsure if there's a smarter way of doing this, replacing the loop with a persistent fact like !Doc(~did, ~bid) destroys performance for some reason
+rule AdversaryRunScriptPostMsg:
+    let docURL = <$DocScheme, $DocDomain, $docpath, params, docfragment>
+    otherURL = <$OtherScheme, $OtherDomain, $otherdocpath, otherparams, otherdocfragment>
+    strippedURL = <$DocScheme, $DocDomain, $docpath, params, 'bot'>
+    docOrigin = <$DocDomain, $DocScheme> in
+    [ !AdvScript($Browser, ~did, docURL, refpolicy)
+    , Document(~otherdid, $Browser, $OtherTLW, otherURL, otherReferer, $otherRefpolicy, $otherscript, otherscriptstate)
+    , In(message)]
+    --[AdvActive(), DocLoop(~otherdid, otherURL, $otherscript), _restrict(not ($otherscript = 'Adversaryscript'))]->
+    [ ScriptinputPOST(~otherdid, ~did, docOrigin, message)
+    , Document(~otherdid, $Browser, $OtherTLW, otherURL, otherReferer, $otherRefpolicy, $otherscript, otherscriptstate) ]
+#endif
+
+// Leak state rules
+rule LeakPlainCookies:
+let leakedcookie = <$name, content> in
+    [!LeakState($Browser, $Domain, $Scheme, $TLW), CookiesPlain(~cid, $Browser, $Domain, rest ++ leakedcookie)[-]]
+    --[PDPlainLeak($Browser, $Domain, leakedcookie), PlainCookiesLoop(~cid, $Browser, $Domain, rest ++ leakedcookie), NoLeakingUninit(content)]->
+    [ CookiesPlain(~cid, $Browser, $Domain, rest ++ leakedcookie)[-]
+    , Out(content)]
+
+rule LeakSecCookies:
+let leakedcookie = <$name, content> in
+    [!LeakState($Browser, $Domain, 'https', $TLW), CookiesSec(~cid, $Browser, $Domain, rest ++ leakedcookie)[-]]
+    --[PDSecLeak($Browser, $Domain, leakedcookie), SecCookiesLoop(~cid, $Browser, $Domain, rest ++ leakedcookie)]->
+    [ CookiesSec(~cid, $Browser, $Domain, rest ++ leakedcookie)[-]
+    , Out(content)]
+
+rule LeakSecrets:
+    [ !LeakState($Browser, $Domain, $Scheme, $TLW)
+    , !Secrets($Browser, $Domain, $Scheme, data)]
+    -->
+    [ Out(data) ]
+
+rule LeakServerSecrets:
+    [ !CompromisedDomain($Domain)
+    , !ServerSecret($Domain, secret)]
+    -->
+    [Out(secret)]
+
+restriction OnlyOnce:
+"All x #i #j. OnlyOnce(x)@i & OnlyOnce(x)@j ==> #i = #j"
+
+restriction Equality:
+"All a b #i. Eq(a,b)@i ==> a = b"
+
+restriction Init:
+"All cookie #i. Uninit(cookie)@i ==> cookie = NoCookies() | (Ex a b. cookie = a ++ b & (All rest singleton. cookie = rest ++ singleton ==> Ex name. singleton = <name, uninit()>))"
+
+
+lemma aux_unique_requests[reuse]:
+"All nonce #i #j. Send_Request_Nonce(nonce)@i & Send_Request_Nonce(nonce)@j ==> #i = #j"

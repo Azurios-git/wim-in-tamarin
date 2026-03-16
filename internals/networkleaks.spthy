@@ -1,0 +1,126 @@
+// Adversary rules: Leaking
+// The rules are split up to allow leaking single cookies, if it were one big rule, it could only fire if there were at least one plain and one sec cookie
+// NB Origin does not need to leak since it will always be composed of PVs
+rule HTTPRevealRequestParamAuthBody:
+    [ !Request($Browser, $Domain, 'http', ~nonce, method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, 'honest')[no_precomp]]
+    // --[PDLeakParams(parameters), PDLeakAuth(auth), PDLeakBody(body), AdvPassive()]->
+    // -->
+    --[PDLeakBody(body)]->
+    [
+        Out(<parameters, auth, body>)
+    ]
+
+rule HTTPRevealRequestPlainCookie:
+let leakedplain = <$name, content> in
+    [ !Request($Browser, $Domain, 'http', ~nonce, method, $path, parameters, plaincookies ++ leakedplain, seccookies, origin, referrer, auth, body, 'honest')]
+    --[PDPlainLeak($Browser, $Domain, leakedplain), AdvPassive(), NoLeakingUninit(content)]->
+    // -->
+    [
+        Out(content)
+    ]
+
+restriction NoUninit:
+"All #i. NoLeakingUninit(uninit())@i ==> F"
+
+// This lemma proves that the below rule is not necessary: A secure cookie is never sent over plain http, unless the adversary controls the browser
+lemma NoSecCookiesOverPlainHTTP:
+"All seccookies scheme #i. SendSecCookies(seccookies, scheme)@i ==> scheme = 'https' | (seccookies = NoCookies() | Ex #j. !KU(seccookies)@j & j < i)"
+
+// rule HTTPRevealRequestSecCookie:
+// let leakedsec = <$name, content> in
+//     [ !Request($Browser, $Domain, 'http', ~nonce, method, $path, parameters, plaincookies, seccookies ++ leakedsec, origin, referrer, auth, body, 'honest')]
+//     --[PDSecLeak($Browser, $Domain, leakedsec), AdvPassive()]->
+//     [
+//         Out(leakedsec)
+//     ]
+
+// Browsers aren't allowed to send fragments in the referrer header
+lemma NoRefFragmentSent:
+"All referer #i. SendReferer(referer)@i ==> referer = NoReferrer() | (Ex scheme dom path params. referer = <scheme, dom, path, params, 'bot'>) | (Ex #j. !KU(referer)@j & j < i)"
+
+rule HTTPRevealRequestReferrer:
+let referrer = <$RefScheme, $RefDomain, $RefPath, RefParams, RefFragment> in
+    [ !Request($Browser, $Domain, 'http', ~nonce, method, $path, parameters, plaincookies, seccookies, origin, referrer, auth, body, 'honest')]
+    --[PDLeakReferrerParams(RefParams), AdvPassive()]->
+    // -->
+    [
+        Out(RefParams)
+    ]
+
+rule CompromisedServerReceiveParamAuthBody:
+    [ !CompromisedDomain($Domain)
+    , !Request($Browser, $Domain, $Scheme, ~nonce, method, $path, parameters, plaincookies, seccookies, origin, referrer, auth , body, 'honest')[no_precomp]]
+    // --[PDLeakParams(parameters), PDLeakAuth(auth), PDLeakBody(body), AdvPassive()]->
+    // -->
+    --[PDLeakBody(body)]->
+    [
+        Out(<parameters, auth, body>)
+    ]
+
+rule CompromisedServerReceivePlainCookie:
+let leakedplain = <$name, content> in
+    [ !CompromisedDomain($Domain)
+    , !Request($Browser, $Domain, $Scheme, ~nonce, method, $path, parameters, plaincookies ++ leakedplain, seccookies, origin, referrer, auth , body, 'honest')]
+    --[PDPlainLeak($Browser, $Domain, leakedplain), AdvPassive(), NoLeakingUninit(content)]->
+    // -->
+    [
+        Out(content)
+    ]
+
+rule CompromisedServerReceiveSecCookie:
+let leakedsec = <$name, content> in
+    [ !CompromisedDomain($Domain)
+    , !Request($Browser, $Domain, $Scheme, ~nonce, method, $path, parameters, plaincookies, seccookies ++ leakedsec, origin, referrer, auth , body, 'honest')]
+    --[PDSecLeak($Browser, $Domain, leakedsec), AdvPassive()]->
+    // -->
+    [
+        Out(content)
+    ] 
+
+rule CompromisedServerReceiveReferrer:
+let referrer = <$RefScheme, $RefDomain, $RefPath, RefParams, RefFragment> in
+    [ !CompromisedDomain($Domain)
+    , !Request($Browser, $Domain, $Scheme, ~nonce, method, $path, parameters, plaincookies ++ leakedplain, seccookies ++ leakedsec, origin, referrer, auth , body, 'honest')]
+    --[PDLeakReferrerParams(RefParams), AdvPassive()]->
+    // -->
+    [
+        Out(RefParams)
+    ]
+
+rule HTTPRevealResponse:
+    [ !Response($Domain, $Browser,'http', ~nonce, $status, setcookiesplain, setcookiessec, location, $sts, refpolicy, body, 'honest')]
+    // --[AdvPassive(), PDListLeakPlain(setcookiesplain), PDListLeakSec(setcookiessec), PDLeakBody(body)]->
+    -->
+    [
+        Out(<setcookiesplain, setcookiessec, body>)
+
+    ]
+
+rule HTTPRevealResponseLocation:
+let location = <$LocScheme, $LocDomain, $LocPath, LocParams, LocFragment> in
+    [ !Response($Domain, $Browser,'http', ~nonce, $status, setcookiesplain, setcookiessec, location, $sts, refpolicy, body, 'honest')]
+    // --[AdvPassive(), PDLeakLocationParams(LocParams), PDLeakLocationFragment(LocFragment)]->
+    -->
+    [
+        Out(<LocParams, LocFragment>)
+    ]
+
+rule CompromisedBrowserReadReceivedMessage:
+    [ !CompromisedBrowser(~bid)
+    , !Response($Domain, ~bid, $Scheme, ~nonce, $status, setcookiesplain, setcookiessec, location, $sts, refpolicy, body, 'honest')[no_precomp]]
+    // --[AdvPassive(), PDListLeakPlain(setcookiesplain), PDListLeakSec(setcookiessec), PDLeakBody(body)]->
+    -->
+    [
+        Out(<setcookiesplain, setcookiessec, body>)
+
+    ]
+
+rule CompromisedBrowserReadReceivedLocation:
+let location = <$LocScheme, $LocDomain, $LocPath, LocParams, LocFragment> in
+    [ !CompromisedBrowser(~bid)
+    , !Response($Domain, ~bid, $Scheme, ~nonce, $status, setcookiesplain, setcookiessec, location, $sts, refpolicy, body, 'honest')]
+    // --[AdvPassive(), PDLeakLocationParams(LocParams), PDLeakLocationFragment(LocFragment)]->
+    -->
+    [
+        Out(<LocParams, LocFragment>)
+    ]

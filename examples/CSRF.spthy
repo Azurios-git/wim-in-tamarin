@@ -1,0 +1,55 @@
+theory CSRF begin
+
+#include "../wim.spthy"
+
+rule miniServerIn:
+    let body = <'MyScript', $Domain> in
+    [ !ClaimDomain($Domain, 'miniServer')
+    , Receive_Request($Browser, $Domain,'https', ~nonce, 'GET', '/init', parameters, cookies, origin, NewReferer, NewAuth, newbody)
+    , Fr(~token)]
+    --[PDAddSecCookies($Domain, $Browser, <'SessionToken', ~token>)]->
+    [ Send_Reply($Domain, $Browser,'https', ~nonce, '200', NoCookies(), <'SessionToken',~token> ++ NoCookies(), NoLocation(), NoSTS(), NoRefPolicy(), body)
+    , !SessionToken($Domain, ~token) ]
+
+#ifdef fixed
+rule miniServerDeleteFixed:
+let origin = <$Domain, 'https'>
+in
+    [ Receive_Request($Browser, $Domain,'https', ~nonce, 'POST', '/deleteme', parameters, cookies ++ <'SessionToken',~token>, origin, NewReferer, NewAuth, newbody)
+    , !SessionToken($Domain, ~token)]
+    --[Deleted(), Commit($Domain, $Browser, '/deleteme')]->
+    []
+#else
+rule miniServerDelete:
+    [ Receive_Request($Browser, $Domain,'https', ~nonce, 'POST', '/deleteme', parameters, cookies ++ <'SessionToken',~token>, origin, NewReferer, NewAuth, newbody)
+    , !SessionToken($Domain, ~token)]
+    --[Deleted(), Commit($Domain, $Browser, '/deleteme')]->
+    []
+#endif
+
+rule clickDeleteMe:
+let docURL = <$Scheme, $DocDomain, path, params, fragment>
+    docOrigin = <$DocDomain, $Scheme> in
+   [ Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'MyScript', $ScriptDomain) ]
+   --[Run($Browser, $ScriptDomain, '/deleteme')]->
+   [ Send_Request_Browser($Browser, $TLW, 'REQ', $Scheme, $ScriptDomain, '/deleteme', NoParams(), 'bot', 'POST', NoAuth(), docOrigin, NoReferrer(), NoRefPolicy(), NoBody())
+   ,  Document(~did, $Browser, $TLW, docURL, referer, refpolicy, 'MyScript', <$ScriptDomain,'ran'>) ]
+
+rule compromiseServer:
+    [!CompromisedDomain($Domain), !SessionToken($Domain, ~token)]
+    -->
+    [Out(~token)]
+
+lemma executability:
+exists-trace
+"Ex #i. Deleted()@i & not (Ex #j. AdvActive()@j) & not (Ex b d r n #j. RedirFrom(b,d,r, n)@j)"
+
+lemma agreementCSRF:
+"All server browser path #i.
+Commit(server, browser, path)@i
+& not (Ex #r. CompromiseDomain(server)@r)
+& not (Ex #r. CompromiseBrowser(browser)@r)
+==> (Ex #j. Run(browser, server, path)@j & j < i)
+"
+
+end

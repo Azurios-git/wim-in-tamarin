@@ -1,0 +1,94 @@
+lemma aux_get_empty_body[reuse]:
+"All browser method body #i. Sent_Method(browser, method, body)@i & (method = 'GET' | method = 'HEAD') ==> body = NoBody() | Ex #j. CompromiseBrowser(browser)@j"
+
+// each redirnonce is only created once
+lemma aux_redirnonce_unique[reuse]:
+"All browser nonce body otherbody dom otherdom scheme otherscheme msgnonce othermsgnonce #i #j. Fresh_Redirnonce(browser, nonce, otherbody, otherdom, scheme, msgnonce)@j & Fresh_Redirnonce(browser, nonce, body, dom, otherscheme, othermsgnonce)@i ==> #i = #j"
+
+// both send and redirs have an originating fresh redirnonce with the same body, or are NoBody()
+lemma aux_redirect_chain[reuse, use_induction]:
+"All browser nonce body dom #i. Send_redirnonce(browser, nonce, body, dom)@i 
+    ==> Ex otherbody otherdom scheme msgnonce #j. Fresh_Redirnonce(browser, nonce, otherbody, otherdom, scheme, msgnonce)@j & (body = NoBody() | otherbody = body)"
+
+lemma aux_redirect_chain2[reuse, use_induction]:
+"All browser nonce body dom inmsg status outmsg #i. Continue_Redir(browser, dom, inmsg, nonce, status, outmsg, body)@i 
+    ==> Ex otherbody otherdom scheme msgnonce #j. Fresh_Redirnonce(browser, nonce, otherbody, otherdom, scheme, msgnonce)@j & (body = NoBody() | otherbody = body)"
+
+// directly following continue_redirs have same body or NoBody() on the following
+lemma single_iter_body[reuse]:
+"All browser redirnonce dom otherbody otherdom msgnonce secondmsgnonce thirdmessagenonce body status otherstatus #j #k.
+Continue_Redir(browser, dom, msgnonce, redirnonce, status, secondmsgnonce, body)@j & Continue_Redir(browser, otherdom, secondmsgnonce, redirnonce, otherstatus, thirdmessagenonce, otherbody)@k
+==> otherbody = body | otherbody = NoBody()"
+
+// if two continue_redirs are directly consecutive, there's no continue_redir between them
+lemma order[reuse]:
+"All browser redirnonce dom otherbody otherdom msgnonce secondmsgnonce thirdmessagenonce body status otherstatus #j #k.
+Continue_Redir(browser, dom, msgnonce, redirnonce, status, secondmsgnonce, body)@j & Continue_Redir(browser, otherdom, secondmsgnonce, redirnonce, otherstatus, thirdmessagenonce, otherbody)@k
+==> not (Ex thirddom msgin thirdstatus msgout thirdbody #l. Continue_Redir(browser, thirddom, msgin, redirnonce, thirdstatus, msgout, thirdbody)@l & #k < #l & #l < #j) 
+"
+
+// 303 means the directly following continue_redir will have nobody
+lemma aux_303_clears_next[reuse]:
+"All browser redirnonce dom otherbody otherdom msgnonce secondmsgnonce body status thirdmsgnonce #j #k. 
+Continue_Redir(browser, dom, msgnonce, redirnonce, '303', secondmsgnonce, body)@j & Continue_Redir(browser, otherdom, secondmsgnonce, redirnonce, status, thirdmsgnonce, otherbody)@k 
+==> otherbody = NoBody() | Ex #i. CompromiseBrowser(browser)@i"
+
+// if a redir chain starts with https and that launches a chain, there has been a (redirection status) response to the first message
+lemma aux_honest_replies[reuse, use_induction]:
+"All browser redirnonce body dom otherbody otherdom msgnonce scheme #i #j. 
+Fresh_Redirnonce(browser, redirnonce, body, dom, scheme, msgnonce)@i & Send_redirnonce(browser, redirnonce, otherbody, otherdom)@j
+    // redirnonce used immediately
+    ==> Send_Request_Nonce(msgnonce)@j 
+    // OR there has been a redirect response to that message
+    | (Ex status secondmsgnonce redirbody thirddom #l. (status = '303' | status = '307') & Continue_Redir(browser, thirddom, msgnonce, redirnonce, status, secondmsgnonce, redirbody)@l & #l < #j)"
+
+
+// Continue_redir comes either from directly preceding fresh_redirnonces, or there's a matching continue_redir
+lemma redir_loops[reuse]:
+"All browser dom inmsgnonce redirnonce status outmsgnonce body #j.
+Continue_Redir(browser, dom, inmsgnonce, redirnonce, status, outmsgnonce, body)@j 
+    ==> (Ex otherdom secondinmsgnonce otherstatus otherbody #k. Continue_Redir(browser, otherdom, secondinmsgnonce, redirnonce, otherstatus, inmsgnonce, otherbody)@k)
+    | (Ex method reqbody reqdom #k. Fresh_Redirnonce(browser, redirnonce, reqbody, reqdom, method, inmsgnonce)@k)
+"
+
+lemma redir_loops_beginning[reuse, use_induction]:
+"All browser dom inmsgnonce redirnonce status outmsgnonce body #j.
+Continue_Redir(browser, dom, inmsgnonce, redirnonce, status, outmsgnonce, body)@j 
+    ==> (Ex method reqbody reqdom otherdom secondinmsgnonce thirdinmsgnonce otherstatus otherbody #k #l. Fresh_Redirnonce(browser, redirnonce, reqbody, reqdom, method, secondinmsgnonce)@l & Continue_Redir(browser, otherdom, secondinmsgnonce, redirnonce, otherstatus, thirdinmsgnonce, otherbody)@k)
+    | (Ex method reqbody reqdom #k. Fresh_Redirnonce(browser, redirnonce, reqbody, reqdom, method, inmsgnonce)@k)
+"
+
+lemma uniqueness_in_first_msg_nonce[reuse]:
+"All browser dom innonce redirnonce outnonce body domtwo outnoncetwo bodytwo status otherstatus #i #j.
+Continue_Redir(browser, dom, innonce, redirnonce, status, outnonce, body)@i & Continue_Redir(browser, domtwo, innonce, redirnonce, otherstatus, outnoncetwo, bodytwo)@j ==> #i = #j "
+
+lemma redir_loops_beginning_ordering[reuse, use_induction]:
+"All browser dom inmsgnonce redirnonce status outmsgnonce body #j.
+Continue_Redir(browser, dom, inmsgnonce, redirnonce, status, outmsgnonce, body)@j 
+    ==> (Ex method reqbody reqdom otherdom secondinmsgnonce thirdinmsgnonce otherstatus otherbody #k #l. Fresh_Redirnonce(browser, redirnonce, reqbody, reqdom, method, secondinmsgnonce)@l & Continue_Redir(browser, otherdom, secondinmsgnonce, redirnonce, otherstatus, thirdinmsgnonce, otherbody)@k & #k < #j)
+    | (Ex method reqbody reqdom #k. Fresh_Redirnonce(browser, redirnonce, reqbody, reqdom, method, inmsgnonce)@k)
+"
+
+// the redir directly following the creating of a redir-thread is the first redir
+lemma aux_first[reuse, hide_lemma=linearize]:
+"All browser redirnonce reqbody reqdom method inmsgnonce status outmsgnonce outbody outdom thirddom thirdin thirdstat thirdout thirdbod #i #j #k.
+Fresh_Redirnonce(browser, redirnonce, reqbody, reqdom, method, inmsgnonce)@i & Continue_Redir(browser, outdom, inmsgnonce, redirnonce, status, outmsgnonce, outbody)@j
+& Continue_Redir(browser, thirddom, thirdin, redirnonce, thirdstat, thirdout, thirdbod)@k ==> #j < #k | #j = #k"
+
+// this proves linearize
+lemma ordering_helper[reuse]:
+"All browser dom innonce redirnonce outnonce body domtwo innoncetwo outnoncetwo bodytwo status otherstatus #i #j.
+Continue_Redir(browser, dom, innonce, redirnonce, status, outnonce, body)@i & Continue_Redir(browser, domtwo, innoncetwo, redirnonce, otherstatus, outnoncetwo, bodytwo)@j & #i < #j
+==> outnonce = innoncetwo | Ex thirddom thirdout thirdstat thirdbod #k. Continue_Redir(browser, thirddom, outnonce, redirnonce, thirdstat, thirdout, thirdbod)@k & #k < #j"
+
+// three redirs j,k,l with j preceeding l because of their msgnonces and k preceeding l (directly) ==> j preceeds k
+lemma linearize[reuse, hide_lemma=aux_first]:
+"All browser redirnonce dom otherbody otherdom inmsgnonce outmsgnonce secondoutmsgnonce body status otherstatus #j #k thirddom thirdin thirdout thirdstatus thirdbod #l.
+Continue_Redir(browser, dom, inmsgnonce, redirnonce, status, outmsgnonce, body)@j & Continue_Redir(browser, otherdom, outmsgnonce, redirnonce, otherstatus, secondoutmsgnonce, otherbody)@k
+& Continue_Redir(browser, thirddom, thirdin, redirnonce, thirdstatus, thirdout, thirdbod)@l & (not (#l = #j)) & (not (#l = #k)) ==> 
+(#l < #j & #l < #k) | (#j < #l & #k < #l)"
+
+lemma 303_clears_body_redirs[reuse, hide_lemma=first_continue_redir, hide_lemma=redir_loops]:
+"All browser redirnonce dom otherbody otherdom msgnonce secondmsgnonce thirdmessagenonce fourthmessagenonce body otherstatus #j #k.
+Continue_Redir(browser, dom, msgnonce, redirnonce, '303', secondmsgnonce, body)@j & Continue_Redir(browser, otherdom, thirdmessagenonce, redirnonce, otherstatus, fourthmessagenonce, otherbody)@k & #j < #k 
+==> otherbody = NoBody() | Ex #i. CompromiseBrowser(browser)@i"

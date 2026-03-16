@@ -1,0 +1,5 @@
+theory protocol begin
+
+#include "wim.spthy"
+
+end
